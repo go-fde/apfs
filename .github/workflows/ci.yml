@@ -11,9 +11,18 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: lint + build + test
-    runs-on: ubuntu-latest
+  # Native runners: full race-enabled test run with coverage, plus vet/build.
+  native:
+    name: native (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,23 +30,104 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: stable
           check-latest: true
           cache: true
 
-      - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          version: 3.x
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Vet
+        run: go vet ./...
 
-      - name: Run Taskfile ci
-        run: task ci
+      - name: Build
+        run: go build ./...
+
+      - name: Test (race + coverage)
+        run: |
+          go test -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -1
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage
+          name: coverage-${{ matrix.arch }}
           path: cover.out
           if-no-files-found: ignore
+
+  # Emulated runners: cross-compile per-package test binaries (CGO off, no race)
+  # and execute them under QEMU via docker. APFS on-disk structures are
+  # little-endian, so s390x (big-endian) genuinely exercises the explicit
+  # binary.LittleEndian decoding paths.
+  emulated:
+    name: emulated (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: riscv64
+            image: debian:trixie
+            qemu_cpu: rv64,v=true,vlen=128
+          - arch: loong64
+            image: ghcr.io/loong64/debian:trixie
+            qemu_cpu: la464
+          - arch: ppc64le
+            image: debian:trixie
+            qemu_cpu: power9
+          - arch: s390x
+            image: debian:trixie
+            qemu_cpu: qemu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+
+      - name: Set up binfmt (QEMU)
+        run: docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - name: Cross-compile test binaries
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euxo pipefail
+          mkdir -p _tests
+          for pkg in $(go list ./...); do
+            name=$(echo "$pkg" | tr '/' '_')
+            if go test -c -cover -o "_tests/${name}.test" "$pkg" 2>"_tests/${name}.log"; then
+              echo "compiled $pkg -> _tests/${name}.test"
+            else
+              # A package with no test files produces no binary; tolerate that.
+              if grep -q "no test files" "_tests/${name}.log"; then
+                echo "no test files in $pkg, skipping"
+              else
+                cat "_tests/${name}.log"
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Run test binaries under QEMU (${{ matrix.arch }})
+        run: |
+          set -euxo pipefail
+          shopt -s nullglob
+          bins=(_tests/*.test)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "no test binaries to run"
+            exit 0
+          fi
+          for bin in "${bins[@]}"; do
+            echo "=== running $bin on ${{ matrix.arch }} ==="
+            docker run --rm \
+              --platform "linux/${{ matrix.arch }}" \
+              -e QEMU_CPU="${{ matrix.qemu_cpu }}" \
+              -v "$PWD:/work" -w /work \
+              "${{ matrix.image }}" \
+              "/work/${bin}" -test.v
+          done
