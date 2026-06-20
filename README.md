@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-fde/brand/main/social/go-fde.png" alt="go-fde/apfs" width="720"></p>
+
 # apfs
 
 Pure-Go read/write support for APFS FileVault 2 full-disk encryption.
