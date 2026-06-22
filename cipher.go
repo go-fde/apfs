@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"golang.org/x/crypto/xts"
+	"github.com/go-fde/apfs/internal/xts"
 )
 
 // xtscipher implements AES-XTS block encryption/decryption as used by APFS.
