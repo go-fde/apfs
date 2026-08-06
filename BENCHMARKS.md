@@ -12,7 +12,8 @@ Linux VM). The `go-fde/clear` passthrough gives the no-encryption upper bound.
 
 The AES-XTS gap is **closed**. `go-fde/apfs` no longer drives
 `golang.org/x/crypto/xts`; it now uses a **fused hardware-accelerated AES-XTS
-kernel** (`internal/xts`) that pipelines four AES blocks at a time and folds the
+kernel** (the shared `github.com/go-encryptions/xts` package) that pipelines four
+AES blocks at a time and folds the
 tweak XOR into the round pipeline — ARMv8 `AESE`/`AESMC` on arm64, AES-NI on
 amd64, and a portable fallback (byte-identical to `x/crypto/xts`) on
 riscv64/loong64/ppc64le/s390x. Output stays byte-for-byte identical to OpenSSL
@@ -21,7 +22,7 @@ and the IEEE P1619 / NIST XTS-AES known-answer vectors.
 ## Methodology
 
 - **Ours (host):** Apple M4 Max, macOS 26.5, Go 1.26.4 `darwin/arm64`,
-  ARMv8 AES present. Cipher: `internal/xts` over `crypto/aes` (the exact
+  ARMv8 AES present. Cipher: `github.com/go-encryptions/xts` over `crypto/aes` (the exact
   `xtscipher` in `cipher.go`); KDFs: `golang.org/x/crypto`. Single core, MB/s
   over 1 MiB in 512-byte sectors, best of `-count=2 -benchtime=3s`.
 - **Apples-to-apples (same VM):** `cb-tpm-ubuntu` Tart VM, aarch64 (ARMv8
