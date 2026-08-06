@@ -258,7 +258,7 @@ matches `diskutil apfs encryptVolume` byte-for-byte, use
 `FormatContainerEncryptedGPT`) which sits on top of this package
 and wires the additional container-level metadata (NX SB
 `nx_keylocker` + `nx_flags`, checkpoint ephemerals, FQ trees,
-APSB encryption flags). See [`COMPAT.md`](../../go-filesystems/apfs/COMPAT.md)
+APSB encryption flags). See [`COMPAT.md`](https://github.com/go-filesystems/apfs/blob/main/COMPAT.md)
 cell F-2 for the full recipe and parity test.
 
 Note: `hdiutil create -encryption AES-256` is **DMG-envelope**
