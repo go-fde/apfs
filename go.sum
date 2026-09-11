@@ -1,5 +1,5 @@
-github.com/go-encryptions/xts v0.0.0-20260908181026-3089a42876e3 h1:G1Nbb8En0Z8mO45IrfTWKDPqrcNn8IURajlSSoQchPY=
-github.com/go-encryptions/xts v0.0.0-20260908181026-3089a42876e3/go.mod h1:8O6H8PrYGodJ5QdRET0VyaxBf/qVVK6HFpbIPfC+M9U=
+github.com/go-encryptions/xts v0.0.0-20260911133109-312298263872 h1:jBKiKLifRmgS0a6bQ+j3Fa9rZInUjjg6UpzsVJD0LkU=
+github.com/go-encryptions/xts v0.0.0-20260911133109-312298263872/go.mod h1:RyAKGhEQaOsPSFLfKei/ouIPSxODN5so4PSa0SviRjI=
 golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
 golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
