@@ -219,6 +219,35 @@ buf := make([]byte, 512)
 apfsDev.ReadAt(buf, 0)
 ```
 
+### Opening an untrusted image: limits
+
+The keybag is read from the image, so it says how much work unlocking costs.
+Without bounds, a crafted locker could ask for 2³² PBKDF2 iterations (hours
+of CPU) or 4 TiB of Argon2 memory, or it could crash the program: an Argon2
+parallelism of 256 becomes 0 in the `uint8` that `golang.org/x/crypto/argon2`
+takes, and argon2 panics on 0. Every locker and KEKBLOB is therefore checked
+**before** any key is derived for it.
+
+- **Always**: Argon2 1 to 255 threads, at least 8 KiB of memory per thread
+  (RFC 9106 §3.1), at most 4 GiB. At least one iteration. A wrapped key of
+  at most 72 bytes (a 64-byte key plus AES-KW's 8, RFC 3394).
+- **The caller's** `Limits`: PBKDF2 iterations, Argon2 passes and memory.
+  `Open` and `OpenFrom` use `DefaultLimits`: 2²⁶ iterations, 1000 passes,
+  4 GiB, generous for keybags macOS calibrates on fast machines. A program
+  opening images from elsewhere (an upload, a browser) can tighten them with
+  `OpenLimited` / `OpenFromLimited`.
+
+If no locker opens and one was refused, the error wraps `ErrLimit`. A wrong
+passphrase gives a different error.
+
+```go
+dev, err := apfs.OpenFromLimited(rw, passphrase, apfs.Limits{
+	MaxPBKDF2Iterations: 1 << 22,
+	MaxArgon2Time:       16,
+	MaxArgon2MemoryKiB:  1 << 20, // 1 GiB
+})
+```
+
 ## Block addressing
 
 ReadAt and WriteAt use **absolute** byte offsets from the start of the
