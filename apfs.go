@@ -73,11 +73,15 @@ type Device struct {
 // Open opens the APFS encrypted volume at path and unlocks it using passphrase.
 // The path may be a raw disk device or an image file.
 func Open(path string, passphrase []byte) (*Device, error) {
+	return open(path, passphrase, DefaultLimits)
+}
+
+func open(path string, passphrase []byte, lim Limits) (*Device, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("apfs: open %s: %w", path, err)
 	}
-	dev, err := openDevice(f, passphrase)
+	dev, err := openDevice(f, passphrase, lim)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -89,12 +93,12 @@ func Open(path string, passphrase []byte) (*Device, error) {
 // device. This allows the package to be layered on top of, e.g., a QCOW2
 // device. Close on the returned Device also closes rw.
 func OpenFrom(rw blockRW, passphrase []byte) (*Device, error) {
-	return openDevice(rw, passphrase)
+	return openDevice(rw, passphrase, DefaultLimits)
 }
 
 // openDevice is the shared implementation for Open and OpenFrom.
-func openDevice(rw blockRW, passphrase []byte) (*Device, error) {
-	vek, err := unlockVEK(rw, passphrase)
+func openDevice(rw blockRW, passphrase []byte, lim Limits) (*Device, error) {
+	vek, err := unlockVEK(rw, passphrase, lim)
 	if err != nil {
 		return nil, err
 	}

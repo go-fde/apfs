@@ -563,7 +563,7 @@ func TestWrappedToKeySize_Valid(t *testing.T) {
 
 func TestDeriveAndUnwrapKEK_UnsupportedKDF(t *testing.T) {
 	lk := &kbLocker{kdfType: 0x9999, iterations: 1000, salt: mustRand(16), wrappedKEK: mustRand(40)}
-	_, err := deriveAndUnwrapKEK(lk, []byte("pass"))
+	_, err := deriveAndUnwrapKEK(lk, []byte("pass"), DefaultLimits)
 	if err == nil {
 		t.Fatal("expected error for unsupported KDF type")
 	}

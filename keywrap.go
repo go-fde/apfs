@@ -3,6 +3,7 @@ package apfs
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
@@ -33,22 +34,22 @@ const (
 //     keybag with a tag=3 PBKDF2 locker (kdfType + iterations + salt +
 //     wrappedKEK) and a tag=2 raw AES-KW(KEK, VEK). Used by older
 //     Format-emitted images and by package tests.
-func unlockVEK(rw io.ReaderAt, passphrase []byte) ([]byte, error) {
+func unlockVEK(rw io.ReaderAt, passphrase []byte, lim Limits) ([]byte, error) {
 	sb, err := parseNXSuperblock(rw)
 	if err != nil {
 		return nil, err
 	}
 	if sb.flags&nxFlagCryptoSW != 0 {
-		return unlockVEKAppleShape(rw, sb, passphrase)
+		return unlockVEKAppleShape(rw, sb, passphrase, lim)
 	}
-	return unlockVEKLegacy(rw, sb, passphrase)
+	return unlockVEKLegacy(rw, sb, passphrase, lim)
 }
 
 // unlockVEKLegacy handles containers produced by this package's
 // pre-F-2 Format / FormatOn / FormatArgon2id, where the keybag was
 // plaintext on disk and used a proprietary PBKDF2 / Argon2id locker
 // shape rather than Apple's ASN.1 VEKBLOB / KEKBLOB.
-func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte) ([]byte, error) {
+func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Limits) ([]byte, error) {
 	kbData, err := readKeybag(rw, sb)
 	if err != nil {
 		return nil, err
@@ -62,11 +63,18 @@ func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte) ([]byt
 		return nil, fmt.Errorf("apfs: no passphrase locker found in key bag")
 	}
 	volumeKeyEntries := findVolumeKeyEntries(entries)
+	var refused error // the first locker the limits refused, said if none opens
 	for _, locker := range lockers {
-		vek, err := tryUnlock(locker, volumeKeyEntries, passphrase)
+		vek, err := tryUnlock(locker, volumeKeyEntries, passphrase, lim)
 		if err == nil {
 			return vek, nil
 		}
+		if refused == nil && errors.Is(err, ErrLimit) {
+			refused = err
+		}
+	}
+	if refused != nil {
+		return nil, refused
 	}
 	return nil, fmt.Errorf("apfs: wrong passphrase or unsupported key derivation")
 }
@@ -74,7 +82,7 @@ func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte) ([]byt
 // unlockVEKAppleShape handles containers produced by
 // FormatContainerEncrypted (or by Apple's apfs.kext via
 // `diskutil apfs encryptVolume`).
-func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte) ([]byte, error) {
+func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Limits) ([]byte, error) {
 	// 1. Read + decrypt the container keybag.
 	containerKBCipher, err := readKeybag(rw, sb)
 	if err != nil {
@@ -129,12 +137,19 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte) ([
 
 	// 4. Find the KEKBLOB (tag=3 = KB_TAG_VOLUME_PASSPHRASE) and recover
 	// the KEK from the passphrase, then unwrap the VEK from the VEKBLOB.
+	var refused error // the first KEKBLOB the limits refused, said if none opens
 	for _, e := range volumeEntries {
 		if e.tag != kbTagVolumePassphrase {
 			continue
 		}
 		kekBlob, err := ParseKEKBlob(e.data)
 		if err != nil {
+			continue
+		}
+		if err := lim.kekBlob(kekBlob); err != nil {
+			if refused == nil {
+				refused = err
+			}
 			continue
 		}
 		derivedKey := pbkdf2.Key(passphrase, kekBlob.PBKDF2Salt, int(kekBlob.Iterations), 32, sha256.New)
@@ -152,17 +167,20 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte) ([
 		}
 		return vek, nil
 	}
+	if refused != nil {
+		return nil, refused
+	}
 	return nil, fmt.Errorf("apfs: wrong passphrase or no acceptable KEK locker")
 }
 
 // tryUnlock attempts to unlock the KEK in a single locker entry and then
 // unwrap the VEK with the recovered KEK.
-func tryUnlock(locker keybagEntry, vkEntries []keybagEntry, passphrase []byte) ([]byte, error) {
+func tryUnlock(locker keybagEntry, vkEntries []keybagEntry, passphrase []byte, lim Limits) ([]byte, error) {
 	lk, err := parseLockerEntry(locker.data)
 	if err != nil {
 		return nil, err
 	}
-	kek, err := deriveAndUnwrapKEK(lk, passphrase)
+	kek, err := deriveAndUnwrapKEK(lk, passphrase, lim)
 	if err != nil {
 		return nil, err
 	}
@@ -171,9 +189,12 @@ func tryUnlock(locker keybagEntry, vkEntries []keybagEntry, passphrase []byte) (
 
 // deriveAndUnwrapKEK derives the key-encryption key from the passphrase and
 // uses it to AES-unwrap the wrapped KEK stored in the locker entry.
-func deriveAndUnwrapKEK(lk *kbLocker, passphrase []byte) ([]byte, error) {
+func deriveAndUnwrapKEK(lk *kbLocker, passphrase []byte, lim Limits) ([]byte, error) {
 	// The wrapped KEK is 40 bytes for a 256-bit key (32 + 8 AES-KW overhead).
 	// Determine the expected unwrapped key size from the wrapped size.
+	if err := wrappedKey(len(lk.wrappedKEK)); err != nil {
+		return nil, err
+	}
 	kekSize, err := wrappedToKeySize(len(lk.wrappedKEK))
 	if err != nil {
 		return nil, err
@@ -181,10 +202,15 @@ func deriveAndUnwrapKEK(lk *kbLocker, passphrase []byte) ([]byte, error) {
 	var kek []byte
 	switch lk.kdfType {
 	case kdfTypePBKDF2:
+		if err := lim.pbkdf2(uint64(lk.iterations)); err != nil {
+			return nil, err
+		}
 		kek = pbkdf2.Key(passphrase, lk.salt, int(lk.iterations), kekSize, sha256.New)
 	case kdfTypeArgon2id:
-		if lk.timeCost == 0 || lk.memoryKiB == 0 || lk.parallelism == 0 {
-			return nil, fmt.Errorf("apfs: invalid Argon2id parameters")
+		// Checked before the uint8 conversion argon2 takes: a parallelism
+		// of 256 would become 0 there, and argon2 panics on 0.
+		if err := lim.argon2(uint64(lk.timeCost), uint64(lk.memoryKiB), uint64(lk.parallelism)); err != nil {
+			return nil, err
 		}
 		kek = argon2.IDKey(passphrase, lk.salt, lk.timeCost, lk.memoryKiB, uint8(lk.parallelism), uint32(kekSize))
 	default:

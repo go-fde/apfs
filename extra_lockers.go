@@ -295,7 +295,7 @@ func recoverKEKAndKeybag(rw blockRW, passphrase []byte) ([]byte, keybagEntry, *n
 		if err != nil {
 			continue
 		}
-		kek, err := deriveAndUnwrapKEK(lk, passphrase)
+		kek, err := deriveAndUnwrapKEK(lk, passphrase, DefaultLimits)
 		if err != nil {
 			continue
 		}
