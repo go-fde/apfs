@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -71,9 +72,10 @@ func TestLimitsRefuseHostileLockers(t *testing.T) {
 		name   string
 		locker []byte
 	}{
-		{"pbkdf2 2^31 iterations", buildLockerEntryData(mustRand(16), 1<<31, kek)},
+		// 2^31-1, not 2^31: the helper takes an int, and int is 32 bits on 386.
+		{"pbkdf2 2^31-1 iterations", buildLockerEntryData(mustRand(16), math.MaxInt32, kek)},
 		{"pbkdf2 zero iterations", buildLockerEntryData(mustRand(16), 0, kek)},
-		{"pbkdf2 huge wrapped key", buildLockerEntryData(mustRand(16), 1<<31, mustRand(2000))},
+		{"pbkdf2 huge wrapped key", buildLockerEntryData(mustRand(16), math.MaxInt32, mustRand(2000))},
 		{"argon2 2^31 passes", argon2Locker(1<<31, 64, 1, kek)},
 		{"argon2 zero passes", argon2Locker(0, 64, 1, kek)},
 		{"argon2 2 TiB", argon2Locker(1, 1<<31, 1, kek)},

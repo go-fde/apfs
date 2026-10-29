@@ -279,33 +279,16 @@ type kekBlobParse struct {
 // makes it to AESKeyUnwrap the unwrap will fail.
 func ParseVEKBlob(der []byte) (vekBlobParse, error) {
 	var out vekBlobParse
-	if len(der) < 4 || der[0] != 0x30 {
-		return out, fmt.Errorf("apfs: VEKBLOB outer not a SEQUENCE")
+	f, err := blobInnerFields(der, 3, "VEKBLOB")
+	if err != nil {
+		return out, err
 	}
-	body := skipDERSeqHeader(der)
-	pos := skipDERVersionField(body)
-	pos = skipDERField(body, pos) // [1] HMAC
-	pos = skipDERField(body, pos) // [2] outer salt
-	if body[pos] != 0xa3 {
-		return out, fmt.Errorf("apfs: VEKBLOB [3] tag = 0x%x, want 0xa3", body[pos])
+	// [1] uuid, [2] flags (skipped), [3] wrapped key
+	if len(f[0]) != 16 {
+		return out, fmt.Errorf("apfs: VEKBLOB inner uuid length %d, want 16", len(f[0]))
 	}
-	innerLen, innerOff := decodeDERLen(body, pos+1)
-	inner := body[innerOff : innerOff+innerLen]
-
-	ipos := skipDERVersionField(inner)
-	// [1] uuid
-	uLen, uOff := decodeDERLen(inner, ipos+1)
-	if uLen != 16 {
-		return out, fmt.Errorf("apfs: VEKBLOB inner uuid length %d, want 16", uLen)
-	}
-	copy(out.UUID[:], inner[uOff:uOff+uLen])
-	ipos = uOff + uLen
-	// [2] flags blob — skip
-	fLen, fOff := decodeDERLen(inner, ipos+1)
-	ipos = fOff + fLen
-	// [3] wrapped key
-	wLen, wOff := decodeDERLen(inner, ipos+1)
-	out.WrappedKey = append([]byte{}, inner[wOff:wOff+wLen]...)
+	copy(out.UUID[:], f[0])
+	out.WrappedKey = append([]byte{}, f[2]...)
 	return out, nil
 }
 
@@ -315,86 +298,101 @@ func ParseVEKBlob(der []byte) (vekBlobParse, error) {
 // and salt needed to derive the unwrap key from a passphrase.
 func ParseKEKBlob(der []byte) (kekBlobParse, error) {
 	var out kekBlobParse
-	if len(der) < 4 || der[0] != 0x30 {
-		return out, fmt.Errorf("apfs: KEKBLOB outer not a SEQUENCE")
+	f, err := blobInnerFields(der, 5, "KEKBLOB")
+	if err != nil {
+		return out, err
 	}
-	body := skipDERSeqHeader(der)
-	pos := skipDERVersionField(body)
-	pos = skipDERField(body, pos) // [1] HMAC
-	pos = skipDERField(body, pos) // [2] outer salt
-	if body[pos] != 0xa3 {
-		return out, fmt.Errorf("apfs: KEKBLOB [3] tag = 0x%x, want 0xa3", body[pos])
+	// [1] uuid, [2] flags (skipped), [3] wrapped KEK, [4] iterations, [5] salt
+	if len(f[0]) != 16 {
+		return out, fmt.Errorf("apfs: KEKBLOB inner uuid length %d, want 16", len(f[0]))
 	}
-	innerLen, innerOff := decodeDERLen(body, pos+1)
-	inner := body[innerOff : innerOff+innerLen]
-
-	ipos := skipDERVersionField(inner)
-	// [1] uuid
-	uLen, uOff := decodeDERLen(inner, ipos+1)
-	if uLen != 16 {
-		return out, fmt.Errorf("apfs: KEKBLOB inner uuid length %d, want 16", uLen)
+	copy(out.UUID[:], f[0])
+	out.WrappedKey = append([]byte{}, f[2]...)
+	// [4] is an unsigned INTEGER: up to 4 value bytes, plus a leading 0x00
+	// when the top bit is set (encodeUnsignedDERInt).
+	it := f[3]
+	if len(it) == 5 && it[0] == 0 {
+		it = it[1:]
 	}
-	copy(out.UUID[:], inner[uOff:uOff+uLen])
-	ipos = uOff + uLen
-	// [2] flags blob — skip
-	fLen, fOff := decodeDERLen(inner, ipos+1)
-	ipos = fOff + fLen
-	// [3] wrapped KEK
-	wLen, wOff := decodeDERLen(inner, ipos+1)
-	out.WrappedKey = append([]byte{}, inner[wOff:wOff+wLen]...)
-	ipos = wOff + wLen
-	// [4] iterations (variable-length INTEGER)
-	itLen, itOff := decodeDERLen(inner, ipos+1)
-	for i := 0; i < itLen; i++ {
-		out.Iterations = (out.Iterations << 8) | uint32(inner[itOff+i])
+	if len(it) == 0 || len(it) > 4 {
+		return out, fmt.Errorf("apfs: KEKBLOB iteration count of %d bytes", len(f[3]))
 	}
-	ipos = itOff + itLen
-	// [5] PBKDF2 salt
-	psLen, psOff := decodeDERLen(inner, ipos+1)
-	out.PBKDF2Salt = append([]byte{}, inner[psOff:psOff+psLen]...)
+	for _, b := range it {
+		out.Iterations = out.Iterations<<8 | uint32(b)
+	}
+	out.PBKDF2Salt = append([]byte{}, f[4]...)
 	return out, nil
 }
 
-// skipDERSeqHeader returns der minus the leading universal SEQUENCE
-// tag+length octets (handles long-form length encoding).
-func skipDERSeqHeader(der []byte) []byte {
-	if der[1]&0x80 == 0 {
-		return der[2:]
+// blobInnerFields walks a keybag blob -- SEQUENCE { [0] version?, [1] HMAC,
+// [2] salt, [3] { [0] version?, field1 ... fieldN } } -- and returns the
+// contents of the first n fields of the [3] envelope. Every length is checked
+// against what is left: the blob comes from an image.
+func blobInnerFields(der []byte, n int, what string) ([][]byte, error) {
+	tag, body, _, err := derTLV(der, 0)
+	if err != nil || tag != 0x30 {
+		return nil, fmt.Errorf("apfs: %s outer not a SEQUENCE", what)
 	}
-	return der[2+int(der[1]&0x7F):]
+	pos := skipDERVersion(body)
+	for range 2 { // [1] HMAC, [2] outer salt
+		if _, _, pos, err = derTLV(body, pos); err != nil {
+			return nil, fmt.Errorf("apfs: %s: %w", what, err)
+		}
+	}
+	tag, inner, _, err := derTLV(body, pos)
+	if err != nil {
+		return nil, fmt.Errorf("apfs: %s: %w", what, err)
+	}
+	if tag != 0xa3 {
+		return nil, fmt.Errorf("apfs: %s [3] tag = 0x%x, want 0xa3", what, tag)
+	}
+	ipos := skipDERVersion(inner)
+	out := make([][]byte, n)
+	for i := range out {
+		if _, out[i], ipos, err = derTLV(inner, ipos); err != nil {
+			return nil, fmt.Errorf("apfs: %s inner field %d: %w", what, i+1, err)
+		}
+	}
+	return out, nil
 }
 
-// decodeDERLen reads a DER length octet sequence starting at off.
-func decodeDERLen(b []byte, off int) (int, int) {
-	first := b[off]
-	if first&0x80 == 0 {
-		return int(first), off + 1
+// derTLV reads one DER tag-length-value at off: its tag, its contents and the
+// offset just past it. Long-form lengths of up to 3 octets are accepted (a
+// blob lives in a keybag block, at most 64 KiB); a length past the end of b
+// is an error, never a panic.
+func derTLV(b []byte, off int) (tag byte, content []byte, next int, err error) {
+	if off < 0 || off > len(b)-2 {
+		return 0, nil, 0, fmt.Errorf("DER field at %d past the end (%d bytes)", off, len(b))
 	}
-	n := int(first & 0x7F)
-	v := 0
-	for i := 0; i < n; i++ {
-		v = (v << 8) | int(b[off+1+i])
+	tag = b[off]
+	l, p := int(b[off+1]), off+2
+	if l&0x80 != 0 {
+		nb := l & 0x7f
+		if nb == 0 || nb > 3 || nb > len(b)-p {
+			return 0, nil, 0, fmt.Errorf("DER length of %d octets at %d", nb, off)
+		}
+		l = 0
+		for _, c := range b[p : p+nb] {
+			l = l<<8 | int(c)
+		}
+		p += nb
 	}
-	return v, off + 1 + n
+	if l > len(b)-p {
+		return 0, nil, 0, fmt.Errorf("DER field at %d: length %d, %d bytes left", off, l, len(b)-p)
+	}
+	return tag, b[p : p+l], p + l, nil
 }
 
-// skipDERVersionField returns the offset just past the leading
-// [0] INTEGER field that every keybag blob (inner and outer) starts
-// with: typically `80 01 00` (3 bytes for version 0).
-func skipDERVersionField(b []byte) int {
-	if b[0] != 0x80 {
+// skipDERVersion returns the offset just past a leading [0] INTEGER version
+// field (typically `80 01 00`), or 0 when there is none or it is malformed.
+func skipDERVersion(b []byte) int {
+	if len(b) == 0 || b[0] != 0x80 {
 		return 0
 	}
-	return 2 + int(b[1])
-}
-
-// skipDERField advances past one primitive context-tagged field at
-// offset `off` and returns the new offset. The tag byte is read but
-// not validated — callers that care about the tag should check
-// b[off] before calling.
-func skipDERField(b []byte, off int) int {
-	contentLen, contentOff := decodeDERLen(b, off+1)
-	return contentOff + contentLen
+	if _, _, next, err := derTLV(b, 0); err == nil {
+		return next
+	}
+	return 0
 }
 
 // BuildKEKBlob returns the DER-encoded KEKBLOB Apple stores in the
