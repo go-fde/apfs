@@ -27,7 +27,7 @@ import (
 	"crypto/aes"
 	"fmt"
 
-	"golang.org/x/crypto/xts"
+	"github.com/go-encryptions/xts"
 )
 
 const (
@@ -188,20 +188,11 @@ func processKeybagAtRest(in []byte, key []byte, paddr uint64, encrypt bool) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("apfs: keybag at-rest: xts cipher: %w", err)
 	}
-	out := make([]byte, len(in))
-	for blockOff := 0; blockOff < len(in); blockOff += nxBlockSize {
-		blockPaddr := paddr + uint64(blockOff/nxBlockSize)
-		baseUnit := blockPaddr * keybagXTSSectorsPerBlock
-		for s := 0; s < keybagXTSSectorsPerBlock; s++ {
-			off := blockOff + s*keybagXTSSectorSize
-			src := in[off : off+keybagXTSSectorSize]
-			dst := out[off : off+keybagXTSSectorSize]
-			if encrypt {
-				c.Encrypt(dst, src, baseUnit+uint64(s))
-			} else {
-				c.Decrypt(dst, src, baseUnit+uint64(s))
-			}
-		}
+	// The data units of consecutive blocks are consecutive, so the whole
+	// run is one cryptSectors call starting at paddr × sectors-per-block.
+	out := append([]byte(nil), in...)
+	if err := cryptSectors(c, out, paddr*keybagXTSSectorsPerBlock, encrypt); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

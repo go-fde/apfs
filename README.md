@@ -237,8 +237,15 @@ takes, and argon2 panics on 0. Every locker and KEKBLOB is therefore checked
   opening images from elsewhere (an upload, a browser) can tighten them with
   `OpenLimited` / `OpenFromLimited`.
 
-If no locker opens and one was refused, the error wraps `ErrLimit`. A wrong
-passphrase gives a different error.
+If no locker opens and one was refused, the error wraps `ErrLimit`. If
+lockers were tried and none opened, it wraps `ErrWrongPassphrase`. Anything
+else is a structural error in the image.
+
+The image geometry is bounded too: a block size must be a power of two from
+4096 to 65536 (`NX_MINIMUM_BLOCK_SIZE` / `NX_MAXIMUM_BLOCK_SIZE`), a keybag at
+most 16 blocks, and a block address must fit in an `int64` byte offset. The
+DER blobs (`VEKBLOB`, `KEKBLOB`) are parsed with every length checked against
+what is left, and fuzzed (`FuzzParseBlobs`, `FuzzUnlockVolumeKey`).
 
 ```go
 dev, err := apfs.OpenFromLimited(rw, passphrase, apfs.Limits{
@@ -247,6 +254,27 @@ dev, err := apfs.OpenFromLimited(rw, passphrase, apfs.Limits{
 	MaxArgon2MemoryKiB:  1 << 20, // 1 GiB
 })
 ```
+
+### The volume key without a Device: `UnlockVolumeKey` and `SectorCipher`
+
+A `Device` decrypts **every** byte it reads. That is right for this
+package's legacy shape, but not for a real FileVault container: there the
+container metadata (superblock, checkpoints, object maps, volume superblock)
+is plaintext, and only file-system tree nodes whose object-map entry has
+`OMAP_VAL_ENCRYPTED` and file extents are encrypted with the VEK (Apple File
+System Reference, "Encryption"). A file-system reader needs the key and a
+cipher it can aim at single blocks:
+
+```go
+vk, err := apfs.UnlockVolumeKey(r, passphrase, apfs.DefaultLimits)
+// vk.VEK, vk.VolumeUUID (zero for the legacy shape)
+sc, err := apfs.NewSectorCipher(vk.VEK)
+// a B-byte block at paddr: data units of 512 bytes, tweak paddr*(B/512)
+err = sc.Decrypt(block, paddr*uint64(len(block)/apfs.SectorSize))
+```
+
+`go-filesystems/apfs` (`OpenFDE`, `OpenFDEFromBlockDevice`) reads FileVault
+volumes this way.
 
 ## Block addressing
 

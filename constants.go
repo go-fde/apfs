@@ -42,6 +42,16 @@ const (
 	// Volumes may override this but 4096 is by far the most common.
 	nxBlockSize = 4096
 
+	// nxMinBlockSize and nxMaxBlockSize are NX_MINIMUM_BLOCK_SIZE and
+	// NX_MAXIMUM_BLOCK_SIZE (Apple File System Reference, "Block and
+	// Container Sizes").
+	nxMinBlockSize = 4096
+	nxMaxBlockSize = 65536
+
+	// maxKeybagBlocks bounds nx_keylocker's block count, which sizes an
+	// allocation.
+	maxKeybagBlocks = 16
+
 	// sectorSize is the unit used for AES-XTS tweak numbering (512 bytes).
 	sectorSize = 512
 

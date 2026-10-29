@@ -61,20 +61,7 @@ func (x *xtscipher) writeAt(rw interface {
 // processSectors encrypts or decrypts p in-place, sector by sector.
 // off is the byte offset of p[0] in the underlying device.
 func (x *xtscipher) processSectors(p []byte, off int64, encrypt bool) error {
-	if len(p)%x.sectorSize != 0 {
-		return fmt.Errorf("apfs: cipher: data length %d is not a multiple of sector size %d", len(p), x.sectorSize)
-	}
-	sectorNum := uint64(off / int64(x.sectorSize))
-	for i := 0; i < len(p); i += x.sectorSize {
-		sector := p[i : i+x.sectorSize]
-		if encrypt {
-			x.enc.Encrypt(sector, sector, sectorNum)
-		} else {
-			x.enc.Decrypt(sector, sector, sectorNum)
-		}
-		sectorNum++
-	}
-	return nil
+	return cryptSectors(x.enc, p, uint64(off/int64(x.sectorSize)), encrypt)
 }
 
 // readAligned reads from rw into p, ensuring the access is sector-aligned.

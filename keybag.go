@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 )
 
 // parseNXSuperblock reads the NX container superblock from block 0 of rw.
@@ -26,6 +27,14 @@ func parseNXSuperblock(rw io.ReaderAt) (*nxSuperblock, error) {
 	if blockSize == 0 {
 		blockSize = nxBlockSize
 	}
+	// The block size is untrusted and sizes allocations below. Apple File
+	// System Reference, "Block and Container Sizes": NX_MINIMUM_BLOCK_SIZE
+	// 4096 to NX_MAXIMUM_BLOCK_SIZE 65536; XTS data units need a multiple
+	// of 512, so a power of two in that range is the only valid value.
+	if blockSize < nxMinBlockSize || blockSize > nxMaxBlockSize || blockSize&(blockSize-1) != 0 {
+		return nil, fmt.Errorf("apfs: container block size %d is not a power of two in [%d, %d]",
+			blockSize, nxMinBlockSize, nxMaxBlockSize)
+	}
 	// nx_keylocker (apfs_prange) at offset 1296: paddr (8) + block_count (8).
 	keybagBlock := binary.LittleEndian.Uint64(buf[nxKeylockerOffset : nxKeylockerOffset+8])
 	keybagBlocks := binary.LittleEndian.Uint64(buf[nxKeylockerOffset+8 : nxKeylockerOffset+16])
@@ -45,14 +54,32 @@ func parseNXSuperblock(rw io.ReaderAt) (*nxSuperblock, error) {
 	}, nil
 }
 
+// blockOffset is paddr × blockSize as a byte offset, refusing a product that
+// does not fit in an int64 (a hostile paddr would otherwise wrap to a small or
+// negative offset).
+func blockOffset(paddr uint64, blockSize uint32) (int64, error) {
+	if blockSize == 0 || paddr > uint64(math.MaxInt64)/uint64(blockSize) {
+		return 0, fmt.Errorf("block %d of %d bytes is past any device", paddr, blockSize)
+	}
+	return int64(paddr) * int64(blockSize), nil
+}
+
 // readKeybag reads the raw key bag bytes from the container.
 func readKeybag(rw io.ReaderAt, sb *nxSuperblock) ([]byte, error) {
 	if sb.keybagBlock == 0 || sb.keybagBlocks == 0 {
 		return nil, fmt.Errorf("apfs: no key bag present in container superblock")
 	}
-	totalBytes := int64(sb.keybagBlocks) * int64(sb.blockSize)
-	buf := make([]byte, totalBytes)
-	off := int64(sb.keybagBlock) * int64(sb.blockSize)
+	// Both fields come from the image: bound the allocation and the offset
+	// before multiplying (a keybag is one block on every image seen; 16 is
+	// slack, at most 1 MiB with 64 KiB blocks).
+	if sb.keybagBlocks > maxKeybagBlocks {
+		return nil, fmt.Errorf("apfs: key bag of %d blocks, at most %d", sb.keybagBlocks, maxKeybagBlocks)
+	}
+	off, err := blockOffset(sb.keybagBlock, sb.blockSize)
+	if err != nil {
+		return nil, fmt.Errorf("apfs: key bag: %w", err)
+	}
+	buf := make([]byte, int(sb.keybagBlocks)*int(sb.blockSize))
 	if _, err := rw.ReadAt(buf, off); err != nil {
 		return nil, fmt.Errorf("apfs: read keybag: %w", err)
 	}

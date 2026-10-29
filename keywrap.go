@@ -35,14 +35,27 @@ const (
 //     wrappedKEK) and a tag=2 raw AES-KW(KEK, VEK). Used by older
 //     Format-emitted images and by package tests.
 func unlockVEK(rw io.ReaderAt, passphrase []byte, lim Limits) ([]byte, error) {
-	sb, err := parseNXSuperblock(rw)
+	vk, err := unlockVolumeKey(rw, passphrase, lim)
 	if err != nil {
 		return nil, err
+	}
+	return vk.VEK, nil
+}
+
+// unlockVolumeKey is unlockVEK keeping the UUID of the volume the key is for.
+func unlockVolumeKey(rw io.ReaderAt, passphrase []byte, lim Limits) (VolumeKey, error) {
+	sb, err := parseNXSuperblock(rw)
+	if err != nil {
+		return VolumeKey{}, err
 	}
 	if sb.flags&nxFlagCryptoSW != 0 {
 		return unlockVEKAppleShape(rw, sb, passphrase, lim)
 	}
-	return unlockVEKLegacy(rw, sb, passphrase, lim)
+	vek, err := unlockVEKLegacy(rw, sb, passphrase, lim)
+	if err != nil {
+		return VolumeKey{}, err
+	}
+	return VolumeKey{VEK: vek}, nil
 }
 
 // unlockVEKLegacy handles containers produced by this package's
@@ -76,25 +89,25 @@ func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Li
 	if refused != nil {
 		return nil, refused
 	}
-	return nil, fmt.Errorf("apfs: wrong passphrase or unsupported key derivation")
+	return nil, fmt.Errorf("%w (or unsupported key derivation)", ErrWrongPassphrase)
 }
 
 // unlockVEKAppleShape handles containers produced by
 // FormatContainerEncrypted (or by Apple's apfs.kext via
 // `diskutil apfs encryptVolume`).
-func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Limits) ([]byte, error) {
+func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Limits) (VolumeKey, error) {
 	// 1. Read + decrypt the container keybag.
 	containerKBCipher, err := readKeybag(rw, sb)
 	if err != nil {
-		return nil, err
+		return VolumeKey{}, err
 	}
 	containerKBPlain, err := DecryptContainerKeybag(containerKBCipher, sb.uuid, sb.keybagBlock)
 	if err != nil {
-		return nil, fmt.Errorf("apfs: decrypt container keybag: %w", err)
+		return VolumeKey{}, fmt.Errorf("apfs: decrypt container keybag: %w", err)
 	}
 	containerEntries, err := parseKeybag(containerKBPlain)
 	if err != nil {
-		return nil, fmt.Errorf("apfs: parse container keybag: %w", err)
+		return VolumeKey{}, fmt.Errorf("apfs: parse container keybag: %w", err)
 	}
 
 	// 2. Walk container entries: tag=3 (volume kb prange) + tag=2 (VEKBLOB).
@@ -118,26 +131,32 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 		}
 	}
 	if !gotVolumeKB || vekBlobBytes == nil {
-		return nil, fmt.Errorf("apfs: container keybag missing tag=2 / tag=3 entries")
+		return VolumeKey{}, fmt.Errorf("apfs: container keybag missing tag=2 / tag=3 entries")
 	}
 
-	// 3. Read + decrypt the volume keybag with the volume UUID.
+	// 3. Read + decrypt the volume keybag with the volume UUID. The paddr
+	// comes from the (decrypted, but still image-supplied) container keybag.
+	kbOff, err := blockOffset(volumeKBPaddr, sb.blockSize)
+	if err != nil {
+		return VolumeKey{}, fmt.Errorf("apfs: volume keybag: %w", err)
+	}
 	volumeKBCipher := make([]byte, sb.blockSize)
-	if _, err := rw.ReadAt(volumeKBCipher, int64(volumeKBPaddr)*int64(sb.blockSize)); err != nil {
-		return nil, fmt.Errorf("apfs: read volume keybag: %w", err)
+	if _, err := rw.ReadAt(volumeKBCipher, kbOff); err != nil {
+		return VolumeKey{}, fmt.Errorf("apfs: read volume keybag: %w", err)
 	}
 	volumeKBPlain, err := DecryptVolumeKeybag(volumeKBCipher, volumeUUID, volumeKBPaddr)
 	if err != nil {
-		return nil, fmt.Errorf("apfs: decrypt volume keybag: %w", err)
+		return VolumeKey{}, fmt.Errorf("apfs: decrypt volume keybag: %w", err)
 	}
 	volumeEntries, err := parseKeybag(volumeKBPlain)
 	if err != nil {
-		return nil, fmt.Errorf("apfs: parse volume keybag: %w", err)
+		return VolumeKey{}, fmt.Errorf("apfs: parse volume keybag: %w", err)
 	}
 
 	// 4. Find the KEKBLOB (tag=3 = KB_TAG_VOLUME_PASSPHRASE) and recover
 	// the KEK from the passphrase, then unwrap the VEK from the VEKBLOB.
 	var refused error // the first KEKBLOB the limits refused, said if none opens
+	tried := 0        // KEKBLOBs whose KDF ran: a failure after one is a wrong passphrase
 	for _, e := range volumeEntries {
 		if e.tag != kbTagVolumePassphrase {
 			continue
@@ -152,6 +171,7 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 			}
 			continue
 		}
+		tried++
 		derivedKey := pbkdf2.Key(passphrase, kekBlob.PBKDF2Salt, int(kekBlob.Iterations), 32, sha256.New)
 		kek, err := aesKeyUnwrap(derivedKey, kekBlob.WrappedKey)
 		if err != nil {
@@ -159,18 +179,21 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 		}
 		vekBlob, err := ParseVEKBlob(vekBlobBytes)
 		if err != nil {
-			return nil, fmt.Errorf("apfs: parse VEKBLOB: %w", err)
+			return VolumeKey{}, fmt.Errorf("apfs: parse VEKBLOB: %w", err)
 		}
 		vek, err := aesKeyUnwrap(kek, vekBlob.WrappedKey)
 		if err != nil {
 			continue
 		}
-		return vek, nil
+		return VolumeKey{VEK: vek, VolumeUUID: volumeUUID}, nil
 	}
 	if refused != nil {
-		return nil, refused
+		return VolumeKey{}, refused
 	}
-	return nil, fmt.Errorf("apfs: wrong passphrase or no acceptable KEK locker")
+	if tried == 0 {
+		return VolumeKey{}, fmt.Errorf("apfs: volume keybag has no usable KEK locker")
+	}
+	return VolumeKey{}, ErrWrongPassphrase
 }
 
 // tryUnlock attempts to unlock the KEK in a single locker entry and then

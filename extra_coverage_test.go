@@ -62,8 +62,8 @@ func TestPackKeybagBlock(t *testing.T) {
 }
 
 // TestParseKEKBlob_RoundTrip exercises BuildKEKBlob → ParseKEKBlob and
-// therefore drives ParseKEKBlob, skipDERSeqHeader, decodeDERLen,
-// skipDERVersionField, and skipDERField.
+// therefore drives ParseKEKBlob, blobInnerFields, derTLV and
+// skipDERVersion.
 func TestParseKEKBlob_RoundTrip(t *testing.T) {
 	uuid := [16]byte{0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
 		0x11, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
