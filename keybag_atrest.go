@@ -17,8 +17,11 @@ package apfs
 // keybag. The VEK is *not* used at this layer; using it would be
 // circular (the volume keybag is what produces the VEK).
 //
-// Each 4096-byte keybag block is processed as 8 sub-sectors, with the
-// first sector keyed at unit `paddr * 8`. This is asymmetric from the
+// Each keybag block of B bytes is processed as B/512 sub-sectors, with the
+// first keyed at unit `paddr * B/512` -- `paddr * 8` for the common 4096-byte
+// block (apfs-fuse KeyMgmt.cpp: cs_factor = blocksize / 0x200). The exported
+// functions without a block size assume 4096; DecryptKeybagBlocks and its
+// siblings take the container's. This is asymmetric from the
 // per-volume-data block encryption (where the unit is the byte offset
 // divided by 512); the keybag layer always counts from `paddr × 8` even
 // if the keybag lives at a non-zero offset inside a GPT-wrapped image.
@@ -34,10 +37,6 @@ const (
 	// keybagXTSSectorSize is the XTS sector size used for keybag at-rest
 	// encryption. APFS uses 512 (not the 4096-byte block size).
 	keybagXTSSectorSize = 512
-
-	// keybagXTSSectorsPerBlock is the number of 512-byte sub-sectors in
-	// a 4096-byte keybag block.
-	keybagXTSSectorsPerBlock = nxBlockSize / keybagXTSSectorSize
 )
 
 // keybagXTSKey returns the AES-XTS key used to encrypt a keybag at
@@ -73,13 +72,16 @@ func volumeKeybagKey(volumeUUID [16]byte) []byte {
 // key must be 32 bytes (AES-128-XTS) or 64 bytes (AES-256-XTS). For the
 // container keybag use containerKeybagKey(uuid); for the volume keybag
 // use the VEK directly.
+//
+// It assumes 4096-byte blocks, as the exported functions without a block
+// size do; DecryptKeybagBlocks and its siblings take the container's.
 func encryptKeybagAtRest(plaintext []byte, key []byte, paddr uint64) ([]byte, error) {
-	return processKeybagAtRest(plaintext, key, paddr, true)
+	return processKeybagAtRest(plaintext, key, paddr, nxBlockSize, true)
 }
 
 // decryptKeybagAtRest is the inverse of encryptKeybagAtRest.
 func decryptKeybagAtRest(ciphertext []byte, key []byte, paddr uint64) ([]byte, error) {
-	return processKeybagAtRest(ciphertext, key, paddr, false)
+	return processKeybagAtRest(ciphertext, key, paddr, nxBlockSize, false)
 }
 
 // DecryptContainerKeybag decrypts a raw container-keybag block (or a
@@ -154,9 +156,9 @@ type KeybagEntry struct {
 // keybag); in the *volume* keybag it's KB_TAG_VOLUME_PASSPHRASE
 // (data = KEKBLOB DER).
 const (
-	KBTagVolumeKey            = uint16(kbTagVolumeKey)
-	KBTagVolumeUnlockRecords  = uint16(kbTagVolumePassphrase) // 3
-	KBTagVolumePassphrase     = uint16(kbTagVolumePassphrase) // 3 (alias)
+	KBTagVolumeKey           = uint16(kbTagVolumeKey)
+	KBTagVolumeUnlockRecords = uint16(kbTagVolumePassphrase) // 3
+	KBTagVolumePassphrase    = uint16(kbTagVolumePassphrase) // 3 (alias)
 )
 
 // PackKeybagBlock builds a 4096-byte plaintext keybag block carrying
@@ -177,9 +179,39 @@ func PackKeybagBlock(entries []KeybagEntry) []byte {
 	return packKeybagBlock(raws)
 }
 
-func processKeybagAtRest(in []byte, key []byte, paddr uint64, encrypt bool) ([]byte, error) {
-	if len(in)%nxBlockSize != 0 {
-		return nil, fmt.Errorf("apfs: keybag at-rest: input length %d is not a multiple of block size %d", len(in), nxBlockSize)
+// DecryptKeybagBlocks decrypts keybag blocks of blockSize bytes read at
+// paddr, keyed by uuid: the container's for the container keybag, the
+// volume's for the volume keybag. The XTS data units are 512 bytes, and the
+// first is paddr × blockSize/512 -- the container's block size, not 4096
+// (apfs-fuse KeyMgmt.cpp, KeyManager::DecryptBlocks: cs_factor =
+// GetBlocksize() / 0x200, uno = block * cs_factor). blockSize is a power of
+// two from 4096 to 65536 (NX_MINIMUM_BLOCK_SIZE to NX_MAXIMUM_BLOCK_SIZE).
+func DecryptKeybagBlocks(ciphertext []byte, uuid [16]byte, paddr uint64, blockSize uint32) ([]byte, error) {
+	return processKeybagAtRest(ciphertext, keybagXTSKey(uuid), paddr, blockSize, false)
+}
+
+// EncryptKeybagBlocks is the inverse of DecryptKeybagBlocks.
+func EncryptKeybagBlocks(plaintext []byte, uuid [16]byte, paddr uint64, blockSize uint32) ([]byte, error) {
+	return processKeybagAtRest(plaintext, keybagXTSKey(uuid), paddr, blockSize, true)
+}
+
+// DecryptVolumeBlocks decrypts volume blocks of blockSize bytes read at
+// paddr with the VEK: the same data units as DecryptKeybagBlocks.
+func DecryptVolumeBlocks(ciphertext []byte, vek []byte, paddr uint64, blockSize uint32) ([]byte, error) {
+	return processKeybagAtRest(ciphertext, vek, paddr, blockSize, false)
+}
+
+// EncryptVolumeBlocks is the inverse of DecryptVolumeBlocks.
+func EncryptVolumeBlocks(plaintext []byte, vek []byte, paddr uint64, blockSize uint32) ([]byte, error) {
+	return processKeybagAtRest(plaintext, vek, paddr, blockSize, true)
+}
+
+func processKeybagAtRest(in []byte, key []byte, paddr uint64, blockSize uint32, encrypt bool) ([]byte, error) {
+	if blockSize < nxMinBlockSize || blockSize > nxMaxBlockSize || blockSize&(blockSize-1) != 0 {
+		return nil, fmt.Errorf("apfs: keybag at-rest: block size %d is not a power of two in [%d, %d]", blockSize, nxMinBlockSize, nxMaxBlockSize)
+	}
+	if len(in)%int(blockSize) != 0 {
+		return nil, fmt.Errorf("apfs: keybag at-rest: input length %d is not a multiple of block size %d", len(in), blockSize)
 	}
 	if len(key) != 32 && len(key) != 64 {
 		return nil, fmt.Errorf("apfs: keybag at-rest: key must be 32 or 64 bytes, got %d", len(key))
@@ -191,7 +223,7 @@ func processKeybagAtRest(in []byte, key []byte, paddr uint64, encrypt bool) ([]b
 	// The data units of consecutive blocks are consecutive, so the whole
 	// run is one cryptSectors call starting at paddr × sectors-per-block.
 	out := append([]byte(nil), in...)
-	if err := cryptSectors(c, out, paddr*keybagXTSSectorsPerBlock, encrypt); err != nil {
+	if err := cryptSectors(c, out, paddr*uint64(blockSize/keybagXTSSectorSize), encrypt); err != nil {
 		return nil, err
 	}
 	return out, nil
