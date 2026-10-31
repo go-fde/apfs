@@ -101,7 +101,7 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 	if err != nil {
 		return VolumeKey{}, err
 	}
-	containerKBPlain, err := DecryptContainerKeybag(containerKBCipher, sb.uuid, sb.keybagBlock)
+	containerKBPlain, err := DecryptKeybagBlocks(containerKBCipher, sb.uuid, sb.keybagBlock, sb.blockSize)
 	if err != nil {
 		return VolumeKey{}, fmt.Errorf("apfs: decrypt container keybag: %w", err)
 	}
@@ -144,7 +144,7 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 	if _, err := rw.ReadAt(volumeKBCipher, kbOff); err != nil {
 		return VolumeKey{}, fmt.Errorf("apfs: read volume keybag: %w", err)
 	}
-	volumeKBPlain, err := DecryptVolumeKeybag(volumeKBCipher, volumeUUID, volumeKBPaddr)
+	volumeKBPlain, err := DecryptKeybagBlocks(volumeKBCipher, volumeUUID, volumeKBPaddr, sb.blockSize)
 	if err != nil {
 		return VolumeKey{}, fmt.Errorf("apfs: decrypt volume keybag: %w", err)
 	}
