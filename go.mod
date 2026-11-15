@@ -5,6 +5,6 @@ go 1.27.1
 require golang.org/x/sys v0.50.0 // indirect
 
 require (
-	github.com/go-encryptions/xts v0.3.1
+	github.com/go-encryptions/xts v0.3.2
 	golang.org/x/crypto v0.59.0
 )
