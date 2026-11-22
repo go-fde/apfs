@@ -1,8 +1,9 @@
 package apfs
 
 import (
-	"errors"
 	"fmt"
+
+	"github.com/go-encryptions/kdfbudget"
 )
 
 // Limits bound the work a keybag may make Open do. A keybag is read from the
@@ -15,10 +16,34 @@ import (
 // takes), at least 8 KiB of memory per thread (RFC 9106 §3.1), at most
 // 4 GiB; at least one iteration; a wrapped key of at most 64 bytes plus
 // AES-KW's 8 (RFC 3394). The cost bounds are the caller's.
+//
+// The first three bound ONE locker. MaxLockers bounds how many a keybag may
+// hold, checked before the first derivation; zero means 16, so a Limits written
+// before it existed keeps working. Budget bounds the TOTAL work across the
+// lockers: every derivation is charged to it before it runs.
 type Limits struct {
 	MaxPBKDF2Iterations uint32
 	MaxArgon2Time       uint32
 	MaxArgon2MemoryKiB  uint32
+
+	// MaxLockers is the most passphrase lockers a keybag may hold. Zero
+	// means 16.
+	MaxLockers uint32
+
+	// Budget bounds the total key-derivation work of ONE unlock (see
+	// go-encryptions/kdfbudget). Nil means a fresh kdfbudget.Default() for
+	// each unlock; kdfbudget.Unlimited() is for an image you trust. A Budget
+	// is spent as it is used, so give each unlock its own: one shared across
+	// unlocks runs out.
+	Budget *kdfbudget.Budget
+}
+
+// forUnlock is l with a Budget: its own, or a fresh default one.
+func (l Limits) forUnlock() Limits {
+	if l.Budget == nil {
+		l.Budget = kdfbudget.Default()
+	}
+	return l
 }
 
 // DefaultLimits are what Open and OpenFrom use: generous for keybags written
@@ -36,8 +61,20 @@ const (
 	maxWrappedKey      = 64 + 8
 )
 
-// ErrLimit is a locker whose parameters a Limits refuses.
-var ErrLimit = errors.New("apfs: the keybag asks for more than the limits allow")
+// ErrLimit is a locker, or a keybag, that a Limits or its Budget refuses. It is
+// kdfbudget.ErrLimit, so errors.Is matches either package's.
+var ErrLimit = kdfbudget.ErrLimit
+
+// chargePBKDF2 charges a PBKDF2-HMAC-SHA256 run producing keyLen bytes to the
+// unlock's Budget, one charge per output block, before it is spent.
+func (l Limits) chargePBKDF2(iters uint64, keyLen int) error {
+	for blocks := (keyLen + 31) / 32; blocks > 0; blocks-- {
+		if err := l.Budget.ChargePBKDF2(kdfbudget.CostSHA256, iters); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (l Limits) pbkdf2(iter uint64) error {
 	if iter < 1 || iter > uint64(l.MaxPBKDF2Iterations) {
@@ -70,6 +107,34 @@ func (l Limits) kekBlob(kb kekBlobParse) error {
 func wrappedKey(n int) error {
 	if n > maxWrappedKey {
 		return fmt.Errorf("%w: a wrapped key of %d bytes, at most %d", ErrLimit, n, maxWrappedKey)
+	}
+	return nil
+}
+
+// The locker count. The bounds above are for ONE locker; a keybag holds many
+// (about a thousand at 4 KiB blocks, sixteen thousand at 64 KiB) and an image
+// needs no key material to ask for all of them, so their number is bounded
+// too, before the first derivation, and one over the bound is ErrLimit, not
+// "wrong passphrase".
+
+// defaultMaxLockers is what Limits.MaxLockers == 0 means. macOS writes one
+// passphrase locker per user plus recovery keys; sixteen is generous.
+const defaultMaxLockers = 16
+
+func (l Limits) maxLockers() uint64 {
+	if l.MaxLockers == 0 {
+		return defaultMaxLockers
+	}
+	return uint64(l.MaxLockers)
+}
+
+// lockerCount refuses a keybag with more passphrase lockers than l allows.
+// n counts every locker entry, whatever its parameters.
+//
+// The total KDF work across the lockers is bounded by Limits.Budget.
+func (l Limits) lockerCount(n int) error {
+	if uint64(n) > l.maxLockers() {
+		return fmt.Errorf("%w: %d lockers in the keybag (at most %d)", ErrLimit, n, l.maxLockers())
 	}
 	return nil
 }

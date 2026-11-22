@@ -1,3 +1,5 @@
+github.com/go-encryptions/kdfbudget v0.1.0 h1:/1n/q+kjoBq3A5JCW/ORQ/nuTbFMn5H22DLgcwCM6lU=
+github.com/go-encryptions/kdfbudget v0.1.0/go.mod h1:8mdvU3fDl6oyWKcTBOSI6Ws+sxZBYOxSPc9i4bpDzS0=
 github.com/go-encryptions/xts v0.3.2 h1:0HKFiBsCaT2+4sPBZXy/oT6Wo8a96EpUEmrDzdGO8sw=
 github.com/go-encryptions/xts v0.3.2/go.mod h1:DOulimnYhyZsjPPeMPDkD/i6cUOLq7mpfvGKG+cdVKQ=
 golang.org/x/crypto v0.59.0 h1:xS2jhqYbzNrpvkWP2YTDf4TJwBy3ykR03i8vFDxEc7c=

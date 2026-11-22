@@ -242,6 +242,21 @@ takes, and argon2 panics on 0. Every locker and KEKBLOB is therefore checked
   4 GiB, generous for keybags macOS calibrates on fast machines. A program
   opening images from elsewhere (an upload, a browser) can tighten them with
   `OpenLimited` / `OpenFromLimited`.
+- **The number of lockers**: the limits above bound ONE locker, but a keybag
+  holds up to about a thousand (4 KiB blocks) or sixteen thousand (64 KiB), and
+  an image needs no key material to ask for all of them. `MaxLockers` (zero
+  means 16) bounds the count, checked before the first derivation in every
+  keybag shape and in the keybag rewrite path (`AddRecoveryKey` and friends).
+  A keybag over the bound is `ErrLimit`, never "wrong passphrase".
+- **The total work**: `Limits.Budget` is a
+  [`kdfbudget.Budget`](https://github.com/go-encryptions/kdfbudget) for ONE
+  unlock. Every PBKDF2 and Argon2 run is charged to it before it runs, so many
+  lockers each within their own limit cannot add up to hours: a charge that
+  does not fit is `ErrLimit` and derives nothing. Nil means a fresh
+  `kdfbudget.Default()` per unlock (2³² work units, at most 4 GiB and 255
+  threads per Argon2 run, about 128 lockers of 4 GiB); `kdfbudget.Unlimited()`
+  is for an image you trust. `apfs.ErrLimit` is `kdfbudget.ErrLimit`. Give each
+  unlock its own `Budget`: it is spent as it is used.
 
 If no locker opens and one was refused, the error wraps `ErrLimit`. If
 lockers were tried and none opened, it wraps `ErrWrongPassphrase`. Anything

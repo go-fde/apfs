@@ -44,6 +44,7 @@ func unlockVEK(rw io.ReaderAt, passphrase []byte, lim Limits) ([]byte, error) {
 
 // unlockVolumeKey is unlockVEK keeping the UUID of the volume the key is for.
 func unlockVolumeKey(rw io.ReaderAt, passphrase []byte, lim Limits) (VolumeKey, error) {
+	lim = lim.forUnlock()
 	sb, err := parseNXSuperblock(rw)
 	if err != nil {
 		return VolumeKey{}, err
@@ -74,6 +75,9 @@ func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Li
 	lockers := findPassphraseLockers(entries)
 	if len(lockers) == 0 {
 		return nil, fmt.Errorf("apfs: no passphrase locker found in key bag")
+	}
+	if err := checkLockerBudget(lockers, lim); err != nil {
+		return nil, err
 	}
 	volumeKeyEntries := findVolumeKeyEntries(entries)
 	var refused error // the first locker the limits refused, said if none opens
@@ -155,6 +159,9 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 
 	// 4. Find the KEKBLOB (tag=3 = KB_TAG_VOLUME_PASSPHRASE) and recover
 	// the KEK from the passphrase, then unwrap the VEK from the VEKBLOB.
+	if err := checkKEKBlobBudget(volumeEntries, lim); err != nil {
+		return VolumeKey{}, err
+	}
 	var refused error // the first KEKBLOB the limits refused, said if none opens
 	tried := 0        // KEKBLOBs whose KDF ran: a failure after one is a wrong passphrase
 	for _, e := range volumeEntries {
@@ -170,6 +177,9 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 				refused = err
 			}
 			continue
+		}
+		if err := lim.chargePBKDF2(uint64(kekBlob.Iterations), 32); err != nil {
+			return VolumeKey{}, err
 		}
 		tried++
 		derivedKey := pbkdf2.Key(passphrase, kekBlob.PBKDF2Salt, int(kekBlob.Iterations), 32, sha256.New)
@@ -197,6 +207,24 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 		return VolumeKey{}, fmt.Errorf("apfs: volume keybag has no usable KEK locker")
 	}
 	return VolumeKey{}, ErrWrongPassphrase
+}
+
+// checkLockerBudget refuses, before any derivation, a keybag with more
+// passphrase lockers than lim allows.
+func checkLockerBudget(lockers []keybagEntry, lim Limits) error {
+	return lim.lockerCount(len(lockers))
+}
+
+// checkKEKBlobBudget is checkLockerBudget for the KEKBLOBs of an Apple-shape
+// volume keybag.
+func checkKEKBlobBudget(entries []keybagEntry, lim Limits) error {
+	n := 0
+	for _, e := range entries {
+		if e.tag == kbTagVolumePassphrase {
+			n++
+		}
+	}
+	return lim.lockerCount(n)
 }
 
 // tryUnlock attempts to unlock the KEK in a single locker entry and then
@@ -231,11 +259,17 @@ func deriveAndUnwrapKEK(lk *kbLocker, passphrase []byte, lim Limits) ([]byte, er
 		if err := lim.pbkdf2(uint64(lk.iterations)); err != nil {
 			return nil, err
 		}
+		if err := lim.chargePBKDF2(uint64(lk.iterations), kekSize); err != nil {
+			return nil, err
+		}
 		kek = pbkdf2.Key(passphrase, lk.salt, int(lk.iterations), kekSize, sha256.New)
 	case kdfTypeArgon2id:
 		// Checked before the uint8 conversion argon2 takes: a parallelism
 		// of 256 would become 0 there, and argon2 panics on 0.
 		if err := lim.argon2(uint64(lk.timeCost), uint64(lk.memoryKiB), uint64(lk.parallelism)); err != nil {
+			return nil, err
+		}
+		if err := lim.Budget.ChargeArgon2(uint64(lk.memoryKiB), uint64(lk.timeCost), uint64(lk.parallelism)); err != nil {
 			return nil, err
 		}
 		kek = argon2.IDKey(passphrase, lk.salt, lk.timeCost, lk.memoryKiB, uint8(lk.parallelism), uint32(kekSize))

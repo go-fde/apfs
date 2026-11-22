@@ -23,6 +23,13 @@ func appleShapeImage(t testing.TB, passphrase []byte, iterations uint32) (img, v
 // appleShapeImageVEK is appleShapeImage with a vekLen-byte volume key.
 func appleShapeImageVEK(t testing.TB, passphrase []byte, iterations uint32, vekLen int) (img, vek []byte, volUUID [16]byte) {
 	t.Helper()
+	return appleShapeImageN(t, passphrase, iterations, vekLen, 1)
+}
+
+// appleShapeImageN is appleShapeImageVEK with n KEKBLOB lockers in the volume
+// keybag, all of them for the same passphrase.
+func appleShapeImageN(t testing.TB, passphrase []byte, iterations uint32, vekLen, n int) (img, vek []byte, volUUID [16]byte) {
+	t.Helper()
 	var nxUUID [16]byte
 	copy(nxUUID[:], mustRand(16))
 	copy(volUUID[:], mustRand(16))
@@ -54,7 +61,11 @@ func appleShapeImageVEK(t testing.TB, passphrase []byte, iterations uint32, vekL
 		{UUID: volUUID, Tag: KBTagVolumeUnlockRecords, Data: prange},
 		{UUID: volUUID, Tag: KBTagVolumeKey, Data: vekBlob},
 	})
-	vPlain := PackKeybagBlock([]KeybagEntry{{UUID: volUUID, Tag: KBTagVolumePassphrase, Data: kekBlob}})
+	var vEntries []KeybagEntry
+	for range n {
+		vEntries = append(vEntries, KeybagEntry{UUID: volUUID, Tag: KBTagVolumePassphrase, Data: kekBlob})
+	}
+	vPlain := PackKeybagBlock(vEntries)
 	cCipher, err := EncryptContainerKeybag(cPlain, nxUUID, cKB)
 	if err != nil {
 		t.Fatal(err)
