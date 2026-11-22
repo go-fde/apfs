@@ -185,6 +185,9 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 		if err != nil {
 			continue
 		}
+		if err := checkVEKLen(vek); err != nil {
+			return VolumeKey{}, err
+		}
 		return VolumeKey{VEK: vek, VolumeUUID: volumeUUID}, nil
 	}
 	if refused != nil {
@@ -257,13 +260,32 @@ func unwrapVEK(vkEntries []keybagEntry, kek []byte) ([]byte, error) {
 	if len(vkEntries) == 0 {
 		return nil, fmt.Errorf("apfs: no volume key entry found in key bag")
 	}
+	var sizeErr error // the last key that unwrapped but cannot be used
 	for _, vke := range vkEntries {
 		vek, err := aesKeyUnwrap(kek, vke.data)
-		if err == nil {
-			return vek, nil
+		if err != nil {
+			continue
 		}
+		if sizeErr = checkVEKLen(vek); sizeErr != nil {
+			continue
+		}
+		return vek, nil
+	}
+	if sizeErr != nil {
+		return nil, sizeErr
 	}
 	return nil, fmt.Errorf("apfs: failed to unwrap volume key with derived KEK")
+}
+
+// checkVEKLen refuses an unwrapped volume key AES-XTS cannot use (it takes 32
+// or 64 bytes, see newXTSCipher). The unwrapped key is attacker-chosen
+// wherever the KEK is known, so this is checked where the key comes out of
+// the keybag, not assumed later.
+func checkVEKLen(vek []byte) error {
+	if len(vek) != 32 && len(vek) != 64 {
+		return fmt.Errorf("apfs: unwrapped volume key is %d bytes, want 32 or 64", len(vek))
+	}
+	return nil
 }
 
 // aesKeyUnwrap implements RFC 3394 AES Key Unwrap.

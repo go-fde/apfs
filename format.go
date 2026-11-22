@@ -48,8 +48,7 @@ func formatDevice(rw blockRW, passphrase []byte) (*Device, error) {
 	if err := writeAPFSContainer(rw, passphrase, vek, kek, salt); err != nil {
 		return nil, err
 	}
-	enc, _ := newXTSCipher(vek)
-	return &Device{f: rw, enc: enc}, nil
+	return newDevice(rw, vek)
 }
 
 // writeAPFSContainer derives keys, wraps them, and writes the container metadata.
