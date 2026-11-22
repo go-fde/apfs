@@ -234,10 +234,15 @@ parallelism of 256 becomes 0 in the `uint8` that `golang.org/x/crypto/argon2`
 takes, and argon2 panics on 0. Every locker and KEKBLOB is therefore checked
 **before** any key is derived for it.
 
-- **Always**: Argon2 1 to 255 threads, at least 8 KiB of memory per thread
-  (RFC 9106 §3.1), at most 4 GiB. At least one iteration. A wrapped key of
-  at most 72 bytes (a 64-byte key plus AES-KW's 8, RFC 3394).
-- **The caller's** `Limits`: PBKDF2 iterations, Argon2 passes and memory.
+- **Always**: Argon2 at least 1 thread and at most 255 (what argon2 takes),
+  at least 8 KiB of memory per thread (RFC 9106 §3.1), at most 4 GiB. At
+  least one iteration. A wrapped key of at most 72 bytes (a 64-byte key plus
+  AES-KW's 8, RFC 3394).
+- **The caller's** `Limits`: PBKDF2 iterations, Argon2 passes, memory and
+  threads. `MaxArgon2Threads` defaults to `DefaultMaxArgon2Threads` (4, as
+  go-fde/luks); memory stays 4 GiB. `FormatArgon2id` and
+  `AddArgon2idPassphrase` refuse parameters the default limits would refuse
+  to open (`ErrLimit`), so this package never writes a keybag it cannot read.
   `Open` and `OpenFrom` use `DefaultLimits`: 2²⁶ iterations, 1000 passes,
   4 GiB, generous for keybags macOS calibrates on fast machines. A program
   opening images from elsewhere (an upload, a browser) can tighten them with

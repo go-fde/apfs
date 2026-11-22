@@ -69,7 +69,18 @@ type Argon2idParams struct {
 	Parallelism uint16
 }
 
-func (p Argon2idParams) resolve() (uint32, uint32, uint16) {
+// resolve fills in the defaults and refuses parameters DefaultLimits would
+// refuse on opening: a locker this package writes must be one it reads back,
+// and a parallelism of 256 or more would panic argon2 (it takes a uint8).
+func (p Argon2idParams) resolve() (uint32, uint32, uint16, error) {
+	t, m, par := p.resolveDefaults()
+	if err := DefaultLimits.argon2(uint64(t), uint64(m), uint64(par)); err != nil {
+		return 0, 0, 0, fmt.Errorf("apfs: argon2id parameters: %w", err)
+	}
+	return t, m, par, nil
+}
+
+func (p Argon2idParams) resolveDefaults() (uint32, uint32, uint16) {
 	t, m, par := p.TimeCost, p.MemoryKiB, p.Parallelism
 	if t == 0 {
 		t = defaultArgon2idTime
@@ -97,7 +108,10 @@ func FormatArgon2idOn(rw blockRW, passphrase []byte, params Argon2idParams) (*De
 	vek := apfsRandBytes(formatVEKSize)
 	kek := apfsRandBytes(formatKEKSize)
 	salt := apfsRandBytes(formatSaltLen)
-	t, m, par := params.resolve()
+	t, m, par, err := params.resolve()
+	if err != nil {
+		return nil, err
+	}
 	wrappedKEK, err := wrapKEKWithArgon2id(passphrase, kek, salt, t, m, par)
 	if err != nil {
 		return nil, err
@@ -158,6 +172,12 @@ func AddArgon2idPassphrase(rw blockRW, existingPassphrase, newPassphrase []byte,
 // existingPassphrase and writes a new locker (PBKDF2 or Argon2id) under
 // newPassphrase, tagged with the supplied UUID.
 func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, uuid [16]byte, kdfType uint16, params Argon2idParams) error {
+	if kdfType == kdfTypeArgon2id {
+		// Refuse bad parameters before the KEK is recovered, not after.
+		if _, _, _, err := params.resolve(); err != nil {
+			return err
+		}
+	}
 	kek, vekKBE, sb, kbData, err := recoverKEKAndKeybag(rw, existingPassphrase)
 	if err != nil {
 		return err
@@ -172,7 +192,7 @@ func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, u
 		}
 		lockerData = encodePBKDF2Locker(formatIterations, salt, wrapped)
 	case kdfTypeArgon2id:
-		t, m, par := params.resolve()
+		t, m, par := params.resolveDefaults()
 		wrapped, werr := wrapKEKWithArgon2id(newPassphrase, kek, salt, t, m, par)
 		if werr != nil {
 			return werr

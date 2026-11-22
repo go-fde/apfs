@@ -169,7 +169,7 @@ func TestFormatArgon2id_OpenError(t *testing.T) {
 // TestArgon2idParams_ResolveZeros covers the default-fill branches in
 // Argon2idParams.resolve when callers leave fields as zero.
 func TestArgon2idParams_ResolveZeros(t *testing.T) {
-	t1, m1, p1 := (Argon2idParams{}).resolve()
+	t1, m1, p1, _ := (Argon2idParams{}).resolve()
 	if t1 == 0 || m1 == 0 || p1 == 0 {
 		t.Fatalf("resolve(zero): expected defaults, got t=%d m=%d p=%d", t1, m1, p1)
 	}

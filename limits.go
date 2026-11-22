@@ -11,10 +11,10 @@ import (
 // becomes 0 once converted to the uint8 argon2 takes -- a panic in
 // golang.org/x/crypto/argon2.
 //
-// Structural bounds always apply: Argon2 1 to 255 threads (what argon2
-// takes), at least 8 KiB of memory per thread (RFC 9106 §3.1), at most
-// 4 GiB; at least one iteration; a wrapped key of at most 64 bytes plus
-// AES-KW's 8 (RFC 3394). The cost bounds are the caller's.
+// Structural bounds always apply: Argon2 at most 255 threads (what argon2
+// takes; MaxArgon2Threads defaults to 4), at least 8 KiB of memory per thread
+// (RFC 9106 §3.1), at most 4 GiB; at least one iteration; a wrapped key of at
+// most 64 bytes plus AES-KW's 8 (RFC 3394). The cost bounds are the caller's.
 //
 // The first three bound ONE locker. The last three bound the keybag as a
 // whole, checked before the first derivation, so that many lockers each at the
@@ -24,6 +24,10 @@ type Limits struct {
 	MaxPBKDF2Iterations uint32
 	MaxArgon2Time       uint32
 	MaxArgon2MemoryKiB  uint32
+	// MaxArgon2Threads is the most Argon2 parallelism one locker may ask
+	// for. Zero means DefaultMaxArgon2Threads (4, as go-fde/luks caps it);
+	// a value above 255 is 255, what argon2 takes.
+	MaxArgon2Threads uint16
 
 	// MaxLockers is the most passphrase lockers a keybag may hold. Zero
 	// means 16.
@@ -52,8 +56,23 @@ const (
 	maxWrappedKey      = 64 + 8
 )
 
+// DefaultMaxArgon2Threads is what Limits.MaxArgon2Threads == 0 means. Argon2id
+// lockers are this package's own format (Apple documents none), so no
+// interoperability argument asks for more; luks caps its Argon2 threads at 4
+// too, and memory stays at 4 GiB.
+const DefaultMaxArgon2Threads = 4
+
 // ErrLimit is a locker whose parameters a Limits refuses.
 var ErrLimit = errors.New("apfs: the keybag asks for more than the limits allow")
+
+// maxThreads is the Argon2 parallelism l allows: MaxArgon2Threads, or
+// DefaultMaxArgon2Threads when that is zero, never more than argon2 can take.
+func (l Limits) maxThreads() uint64 {
+	if l.MaxArgon2Threads == 0 {
+		return DefaultMaxArgon2Threads
+	}
+	return uint64(min(l.MaxArgon2Threads, argon2MaxThreads))
+}
 
 func (l Limits) pbkdf2(iter uint64) error {
 	if iter < 1 || iter > uint64(l.MaxPBKDF2Iterations) {
@@ -67,8 +86,8 @@ func (l Limits) argon2(time, memKiB, threads uint64) error {
 	switch {
 	case time < 1 || time > uint64(l.MaxArgon2Time):
 		return fmt.Errorf("%w: %d Argon2 passes (1 to %d)", ErrLimit, time, l.MaxArgon2Time)
-	case threads < 1 || threads > argon2MaxThreads:
-		return fmt.Errorf("%w: %d Argon2 threads (1 to %d)", ErrLimit, threads, argon2MaxThreads)
+	case threads < 1 || threads > l.maxThreads():
+		return fmt.Errorf("%w: %d Argon2 threads (1 to %d)", ErrLimit, threads, l.maxThreads())
 	case memKiB < 8*threads || memKiB > maxMem:
 		return fmt.Errorf("%w: %d KiB of Argon2 memory for %d threads (8 per thread to %d)", ErrLimit, memKiB, threads, maxMem)
 	}
