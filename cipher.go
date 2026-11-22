@@ -38,23 +38,43 @@ func (x *xtscipher) readAt(rw io.ReaderAt, p []byte, off int64) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	// processSectors cannot fail here because readAligned already verified
-	// alignment and sector-multiple length.
-	_ = x.processSectors(p[:n], off, false)
+	// A short read (n < len(p)) can leave a partial sector; refuse to
+	// decrypt it rather than hand back half-processed data.
+	if err := x.processSectors(p[:n], off, false); err != nil {
+		return 0, err
+	}
 	return n, nil
 }
 
-// writeAt encrypts p and writes it to rw.
-// p must be sector-aligned in length and off must be a sector boundary;
-// these preconditions are enforced by the public WriteAt method.
+// checkAligned refuses an access that is not whole sectors at a sector
+// boundary: XTS works on whole sectors, and a partial one would either be
+// stored unencrypted or under the wrong tweak.
+func checkAligned(n int, off int64, sectorSize int) error {
+	switch {
+	case off < 0:
+		return fmt.Errorf("apfs: negative offset %d", off)
+	case off%int64(sectorSize) != 0:
+		return fmt.Errorf("apfs: unaligned offset %d (sector size %d)", off, sectorSize)
+	case n%sectorSize != 0:
+		return fmt.Errorf("apfs: length %d is not a multiple of sector size %d", n, sectorSize)
+	}
+	return nil
+}
+
+// writeAt encrypts p and writes it to rw. It refuses, before writing
+// anything, a p whose length or an off that is not a sector multiple, and it
+// never writes when encryption fails.
 func (x *xtscipher) writeAt(rw interface {
 	WriteAt([]byte, int64) (int, error)
 }, p []byte, off int64) (int, error) {
+	if err := checkAligned(len(p), off, x.sectorSize); err != nil {
+		return 0, err
+	}
 	encrypted := make([]byte, len(p))
 	copy(encrypted, p)
-	// processSectors cannot fail here because the public WriteAt validates
-	// alignment before calling writeAt.
-	_ = x.processSectors(encrypted, off, true)
+	if err := x.processSectors(encrypted, off, true); err != nil {
+		return 0, err
+	}
 	return rw.WriteAt(encrypted, off)
 }
 
@@ -68,11 +88,8 @@ func (x *xtscipher) processSectors(p []byte, off int64, encrypt bool) error {
 // If off is not sector-aligned, it returns an error because XTS requires
 // sector-aligned reads.
 func readAligned(rw io.ReaderAt, p []byte, off int64, sectorSize int) (int, error) {
-	if off%int64(sectorSize) != 0 {
-		return 0, fmt.Errorf("apfs: unaligned read at offset %d (sector size %d)", off, sectorSize)
-	}
-	if len(p)%sectorSize != 0 {
-		return 0, fmt.Errorf("apfs: read length %d is not a multiple of sector size %d", len(p), sectorSize)
+	if err := checkAligned(len(p), off, sectorSize); err != nil {
+		return 0, err
 	}
 	return rw.ReadAt(p, off)
 }
