@@ -100,3 +100,25 @@ func TestUnwrapVEKRefusesAShortVEK(t *testing.T) {
 		t.Fatalf("unwrapVEK = %d bytes, %v", len(v), err)
 	}
 }
+
+func TestAppleShapeRefusesAShortVEK(t *testing.T) {
+	pass := []byte("known")
+	img, _, _ := appleShapeImageVEK(t, pass, 1000, 16)
+	if vk, err := UnlockVolumeKey(bytes.NewReader(img), pass, DefaultLimits); err == nil {
+		t.Fatalf("UnlockVolumeKey returned a %d-byte VEK", len(vk.VEK))
+	}
+	if dev, err := OpenFrom(&memRW{buf: img}, pass); err == nil {
+		t.Fatalf("OpenFrom accepted a 16-byte VEK (dev=%v)", dev)
+	}
+}
+
+func TestNewDeviceRefusesAKeyXTSCannotTake(t *testing.T) {
+	for _, n := range []int{0, 16, 31, 33, 65} {
+		if dev, err := newDevice(newMemRW(512), make([]byte, n)); err == nil || dev != nil {
+			t.Fatalf("newDevice accepted a %d-byte key: %v, %v", n, dev, err)
+		}
+	}
+	if dev, err := newDevice(newMemRW(512), make([]byte, 64)); err != nil || dev.enc == nil {
+		t.Fatalf("newDevice refused a 64-byte key: %v", err)
+	}
+}

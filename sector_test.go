@@ -17,10 +17,16 @@ import (
 // block 3 whose KEKBLOB is unwrapped by passphrase.
 func appleShapeImage(t testing.TB, passphrase []byte, iterations uint32) (img, vek []byte, volUUID [16]byte) {
 	t.Helper()
+	return appleShapeImageVEK(t, passphrase, iterations, 32)
+}
+
+// appleShapeImageVEK is appleShapeImage with a vekLen-byte volume key.
+func appleShapeImageVEK(t testing.TB, passphrase []byte, iterations uint32, vekLen int) (img, vek []byte, volUUID [16]byte) {
+	t.Helper()
 	var nxUUID [16]byte
 	copy(nxUUID[:], mustRand(16))
 	copy(volUUID[:], mustRand(16))
-	vek = mustRand(32)
+	vek = mustRand(vekLen)
 	kek := mustRand(32)
 	salt := mustRand(16)
 	derived := pbkdf2.Key(passphrase, salt, int(iterations), 32, sha256.New)

@@ -116,11 +116,7 @@ func FormatArgon2idOn(rw blockRW, passphrase []byte, params Argon2idParams) (*De
 	if _, err := rw.WriteAt(kbBlock, int64(nxBlockSize)); err != nil {
 		return nil, fmt.Errorf("apfs: argon2id format: write keybag: %w", err)
 	}
-	enc, err := newXTSCipher(vek)
-	if err != nil {
-		return nil, err
-	}
-	return &Device{f: rw, enc: enc}, nil
+	return newDevice(rw, vek)
 }
 
 // wrapKEKWithArgon2id derives an Argon2id key from passphrase+salt and uses
@@ -266,11 +262,7 @@ func OpenFromWithPrivateKey(rw blockRW, priv *rsa.PrivateKey) (*Device, error) {
 		if err != nil {
 			return nil, err
 		}
-		enc, err := newXTSCipher(vek)
-		if err != nil {
-			return nil, err
-		}
-		return &Device{f: rw, enc: enc}, nil
+		return newDevice(rw, vek)
 	}
 	return nil, fmt.Errorf("apfs: no institutional recovery key entry matches the supplied private key")
 }

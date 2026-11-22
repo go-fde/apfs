@@ -102,6 +102,12 @@ func openDevice(rw blockRW, passphrase []byte, lim Limits) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newDevice(rw, vek)
+}
+
+// newDevice builds the Device for an unlocked vek. It fails for a key AES-XTS
+// cannot take, never returning a Device with a nil cipher.
+func newDevice(rw blockRW, vek []byte) (*Device, error) {
 	enc, err := newXTSCipher(vek)
 	if err != nil {
 		return nil, err
