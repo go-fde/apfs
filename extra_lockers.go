@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 
@@ -136,29 +137,48 @@ func wrapKEKWithArgon2id(passphrase, kek, salt []byte, t, m uint32, par uint16) 
 // under the new recoveryKey using PBKDF2-SHA256. The PRK locker is tagged
 // with the well-known recoveryKeyUUID so callers can distinguish it.
 func AddRecoveryKey(rw blockRW, existingPassphrase, recoveryKey []byte) error {
-	return addPassphraseLocker(rw, existingPassphrase, recoveryKey, recoveryKeyUUID, kdfTypePBKDF2, Argon2idParams{})
+	return AddRecoveryKeyLimited(rw, existingPassphrase, recoveryKey, DefaultLimits)
+}
+
+// AddRecoveryKeyLimited is AddRecoveryKey with lim instead of DefaultLimits:
+// the existing keybag's lockers are bounded and charged to lim.Budget.
+func AddRecoveryKeyLimited(rw blockRW, existingPassphrase, recoveryKey []byte, lim Limits) error {
+	return addPassphraseLocker(rw, existingPassphrase, recoveryKey, recoveryKeyUUID, kdfTypePBKDF2, Argon2idParams{}, lim)
 }
 
 // AddPassphrase rewrites the keybag to add an additional regular passphrase
 // locker (PBKDF2). Useful when a container needs more than one passphrase to
 // unlock — for example a personal one and a shared one.
 func AddPassphrase(rw blockRW, existingPassphrase, newPassphrase []byte) error {
+	return AddPassphraseLimited(rw, existingPassphrase, newPassphrase, DefaultLimits)
+}
+
+// AddPassphraseLimited is AddPassphrase with lim instead of DefaultLimits.
+func AddPassphraseLimited(rw blockRW, existingPassphrase, newPassphrase []byte, lim Limits) error {
 	var zero [16]byte
-	return addPassphraseLocker(rw, existingPassphrase, newPassphrase, zero, kdfTypePBKDF2, Argon2idParams{})
+	return addPassphraseLocker(rw, existingPassphrase, newPassphrase, zero, kdfTypePBKDF2, Argon2idParams{}, lim)
 }
 
 // AddArgon2idPassphrase rewrites the keybag to add an additional passphrase
 // locker that uses Argon2id (kdfType = 0x0001) for key derivation.
 func AddArgon2idPassphrase(rw blockRW, existingPassphrase, newPassphrase []byte, params Argon2idParams) error {
+	return AddArgon2idPassphraseLimited(rw, existingPassphrase, newPassphrase, params, DefaultLimits)
+}
+
+// AddArgon2idPassphraseLimited is AddArgon2idPassphrase with lim instead of
+// DefaultLimits. The new locker's own Argon2 run is charged to lim.Budget too,
+// before it runs.
+func AddArgon2idPassphraseLimited(rw blockRW, existingPassphrase, newPassphrase []byte, params Argon2idParams, lim Limits) error {
 	var zero [16]byte
-	return addPassphraseLocker(rw, existingPassphrase, newPassphrase, zero, kdfTypeArgon2id, params)
+	return addPassphraseLocker(rw, existingPassphrase, newPassphrase, zero, kdfTypeArgon2id, params, lim)
 }
 
 // addPassphraseLocker is the shared implementation that recovers the KEK with
 // existingPassphrase and writes a new locker (PBKDF2 or Argon2id) under
 // newPassphrase, tagged with the supplied UUID.
-func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, uuid [16]byte, kdfType uint16, params Argon2idParams) error {
-	kek, vekKBE, sb, kbData, err := recoverKEKAndKeybag(rw, existingPassphrase)
+func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, uuid [16]byte, kdfType uint16, params Argon2idParams, lim Limits) error {
+	lim = lim.forUnlock()
+	kek, vekKBE, sb, kbData, err := recoverKEKAndKeybag(rw, existingPassphrase, lim)
 	if err != nil {
 		return err
 	}
@@ -166,6 +186,9 @@ func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, u
 	var lockerData []byte
 	switch kdfType {
 	case kdfTypePBKDF2:
+		if cerr := lim.chargePBKDF2(formatIterations, formatKEKSize); cerr != nil {
+			return cerr
+		}
 		wrapped, werr := wrapKEKWithPBKDF2(newPassphrase, kek, salt, formatIterations)
 		if werr != nil {
 			return werr
@@ -173,6 +196,9 @@ func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, u
 		lockerData = encodePBKDF2Locker(formatIterations, salt, wrapped)
 	case kdfTypeArgon2id:
 		t, m, par := params.resolve()
+		if cerr := lim.Budget.ChargeArgon2(uint64(m), uint64(t), uint64(par)); cerr != nil {
+			return cerr
+		}
 		wrapped, werr := wrapKEKWithArgon2id(newPassphrase, kek, salt, t, m, par)
 		if werr != nil {
 			return werr
@@ -191,6 +217,12 @@ func addPassphraseLocker(rw blockRW, existingPassphrase, newPassphrase []byte, u
 // key DER (truncated to 16 bytes) so multiple IRKs can coexist without
 // collision.
 func AddInstitutionalKey(rw blockRW, existingPassphrase []byte, pub *rsa.PublicKey) error {
+	return AddInstitutionalKeyLimited(rw, existingPassphrase, pub, DefaultLimits)
+}
+
+// AddInstitutionalKeyLimited is AddInstitutionalKey with lim instead of
+// DefaultLimits.
+func AddInstitutionalKeyLimited(rw blockRW, existingPassphrase []byte, pub *rsa.PublicKey, lim Limits) error {
 	if pub == nil {
 		return fmt.Errorf("apfs: institutional key: nil public key")
 	}
@@ -199,7 +231,7 @@ func AddInstitutionalKey(rw blockRW, existingPassphrase []byte, pub *rsa.PublicK
 		return fmt.Errorf("apfs: institutional key: marshal public key: %w", err)
 	}
 	fingerprint := sha256.Sum256(pubDER)
-	kek, vekKBE, sb, kbData, err := recoverKEKAndKeybag(rw, existingPassphrase)
+	kek, vekKBE, sb, kbData, err := recoverKEKAndKeybag(rw, existingPassphrase, lim.forUnlock())
 	if err != nil {
 		return err
 	}
@@ -226,6 +258,10 @@ func OpenWithPrivateKey(path string, priv *rsa.PrivateKey) (*Device, error) {
 }
 
 // OpenFromWithPrivateKey is the OpenFrom equivalent for IRK unlock.
+//
+// It takes no Limits: it derives no key from a passphrase, and it stops at the
+// first entry carrying the key's fingerprint, so a keybag costs at most ONE RSA
+// private-key operation however many entries it holds (issue #35).
 func OpenFromWithPrivateKey(rw blockRW, priv *rsa.PrivateKey) (*Device, error) {
 	if priv == nil {
 		return nil, fmt.Errorf("apfs: institutional key: nil private key")
@@ -271,7 +307,7 @@ func OpenFromWithPrivateKey(rw blockRW, priv *rsa.PrivateKey) (*Device, error) {
 // recover the master KEK. It returns the KEK plus the keybag entries that
 // must be preserved when rewriting (the volume-key entry plus the raw keybag
 // bytes for re-emission).
-func recoverKEKAndKeybag(rw blockRW, passphrase []byte) ([]byte, keybagEntry, *nxSuperblock, []byte, error) {
+func recoverKEKAndKeybag(rw blockRW, passphrase []byte, lim Limits) ([]byte, keybagEntry, *nxSuperblock, []byte, error) {
 	sb, err := parseNXSuperblock(rw)
 	if err != nil {
 		return nil, keybagEntry{}, nil, nil, err
@@ -289,10 +325,10 @@ func recoverKEKAndKeybag(rw blockRW, passphrase []byte) ([]byte, keybagEntry, *n
 		return nil, keybagEntry{}, nil, nil, fmt.Errorf("apfs: rewrite keybag: no volume-key entry")
 	}
 	lockers := findPassphraseLockers(entries)
-	lim := DefaultLimits.forUnlock()
 	if err := checkLockerBudget(lockers, lim); err != nil {
 		return nil, keybagEntry{}, nil, nil, err
 	}
+	var refused error
 	for _, locker := range lockers {
 		lk, err := parseLockerEntry(locker.data)
 		if err != nil {
@@ -300,6 +336,9 @@ func recoverKEKAndKeybag(rw blockRW, passphrase []byte) ([]byte, keybagEntry, *n
 		}
 		kek, err := deriveAndUnwrapKEK(lk, passphrase, lim)
 		if err != nil {
+			if errors.Is(err, ErrLimit) {
+				refused = err
+			}
 			continue
 		}
 		// Confirm KEK unwraps the VEK (defence in depth).
@@ -307,6 +346,9 @@ func recoverKEKAndKeybag(rw blockRW, passphrase []byte) ([]byte, keybagEntry, *n
 			continue
 		}
 		return kek, vkEntries[0], sb, kbData, nil
+	}
+	if refused != nil {
+		return nil, keybagEntry{}, nil, nil, refused
 	}
 	return nil, keybagEntry{}, nil, nil, fmt.Errorf("apfs: rewrite keybag: passphrase did not unlock any locker")
 }
