@@ -246,8 +246,13 @@ takes, and argon2 panics on 0. Every locker and KEKBLOB is therefore checked
   holds up to about a thousand (4 KiB blocks) or sixteen thousand (64 KiB), and
   an image needs no key material to ask for all of them. `MaxLockers` (zero
   means 16) bounds the count, checked before the first derivation in every
-  keybag shape and in the keybag rewrite path (`AddRecoveryKey` and friends).
+  keybag shape and in the keybag rewrite path (`AddRecoveryKey` and friends,
+  which take `Limits` through `AddRecoveryKeyLimited`, `AddPassphraseLimited`,
+  `AddArgon2idPassphraseLimited` and `AddInstitutionalKeyLimited`; the new
+  locker's own derivation is charged to the `Budget` too).
   A keybag over the bound is `ErrLimit`, never "wrong passphrase".
+  `OpenFromWithPrivateKey` takes no `Limits`: it derives no key and costs one
+  RSA operation at most.
 - **The total work**: `Limits.Budget` is a
   [`kdfbudget.Budget`](https://github.com/go-encryptions/kdfbudget) for ONE
   unlock. Every PBKDF2 and Argon2 run is charged to it before it runs, so many
