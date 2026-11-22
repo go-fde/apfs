@@ -288,7 +288,11 @@ func recoverKEKAndKeybag(rw blockRW, passphrase []byte) ([]byte, keybagEntry, *n
 	if len(vkEntries) == 0 {
 		return nil, keybagEntry{}, nil, nil, fmt.Errorf("apfs: rewrite keybag: no volume-key entry")
 	}
-	for _, locker := range findPassphraseLockers(entries) {
+	lockers := findPassphraseLockers(entries)
+	if err := checkLockerBudget(lockers, DefaultLimits); err != nil {
+		return nil, keybagEntry{}, nil, nil, err
+	}
+	for _, locker := range lockers {
 		lk, err := parseLockerEntry(locker.data)
 		if err != nil {
 			continue

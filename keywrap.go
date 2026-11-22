@@ -75,6 +75,9 @@ func unlockVEKLegacy(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, lim Li
 	if len(lockers) == 0 {
 		return nil, fmt.Errorf("apfs: no passphrase locker found in key bag")
 	}
+	if err := checkLockerBudget(lockers, lim); err != nil {
+		return nil, err
+	}
 	volumeKeyEntries := findVolumeKeyEntries(entries)
 	var refused error // the first locker the limits refused, said if none opens
 	for _, locker := range lockers {
@@ -155,8 +158,11 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 
 	// 4. Find the KEKBLOB (tag=3 = KB_TAG_VOLUME_PASSPHRASE) and recover
 	// the KEK from the passphrase, then unwrap the VEK from the VEKBLOB.
+	if err := checkKEKBlobBudget(volumeEntries, lim); err != nil {
+		return VolumeKey{}, err
+	}
 	var refused error // the first KEKBLOB the limits refused, said if none opens
-	tried := 0        // KEKBLOBs whose KDF ran: a failure after one is a wrong passphrase
+	tried := 0       // KEKBLOBs whose KDF ran: a failure after one is a wrong passphrase
 	for _, e := range volumeEntries {
 		if e.tag != kbTagVolumePassphrase {
 			continue
@@ -197,6 +203,52 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 		return VolumeKey{}, fmt.Errorf("apfs: volume keybag has no usable KEK locker")
 	}
 	return VolumeKey{}, ErrWrongPassphrase
+}
+
+// checkLockerBudget refuses, before any derivation, a keybag whose passphrase
+// lockers are too many or together ask for more KDF work than lim allows. Only
+// lockers that parse and pass the per-locker bounds add to the work: the rest
+// are refused one by one without deriving anything.
+func checkLockerBudget(lockers []keybagEntry, lim Limits) error {
+	var w work
+	for _, e := range lockers {
+		lk, err := parseLockerEntry(e.data)
+		if err != nil {
+			continue
+		}
+		switch lk.kdfType {
+		case kdfTypePBKDF2:
+			if lim.pbkdf2(uint64(lk.iterations)) == nil {
+				w.addPBKDF2(lk.iterations)
+			}
+		case kdfTypeArgon2id:
+			if lim.argon2(uint64(lk.timeCost), uint64(lk.memoryKiB), uint64(lk.parallelism)) == nil {
+				w.addArgon2(lk.timeCost, lk.memoryKiB)
+			}
+		}
+	}
+	return lim.total(len(lockers), w)
+}
+
+// checkKEKBlobBudget is checkLockerBudget for the KEKBLOBs of an Apple-shape
+// volume keybag.
+func checkKEKBlobBudget(entries []keybagEntry, lim Limits) error {
+	var w work
+	n := 0
+	for _, e := range entries {
+		if e.tag != kbTagVolumePassphrase {
+			continue
+		}
+		n++
+		kb, err := ParseKEKBlob(e.data)
+		if err != nil {
+			continue
+		}
+		if lim.kekBlob(kb) == nil {
+			w.addPBKDF2(kb.Iterations)
+		}
+	}
+	return lim.total(n, w)
 }
 
 // tryUnlock attempts to unlock the KEK in a single locker entry and then
