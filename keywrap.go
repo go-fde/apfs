@@ -162,7 +162,7 @@ func unlockVEKAppleShape(rw io.ReaderAt, sb *nxSuperblock, passphrase []byte, li
 		return VolumeKey{}, err
 	}
 	var refused error // the first KEKBLOB the limits refused, said if none opens
-	tried := 0       // KEKBLOBs whose KDF ran: a failure after one is a wrong passphrase
+	tried := 0        // KEKBLOBs whose KDF ran: a failure after one is a wrong passphrase
 	for _, e := range volumeEntries {
 		if e.tag != kbTagVolumePassphrase {
 			continue
