@@ -110,3 +110,17 @@ func allZero(b []byte) bool {
 	}
 	return true
 }
+
+func TestArgon2idParamsResolveBothSides(t *testing.T) {
+	tc, m, par, err := (Argon2idParams{}).resolve()
+	if err != nil || tc == 0 || m == 0 || par == 0 {
+		t.Fatalf("defaults: %d %d %d, %v", tc, m, par, err)
+	}
+	tc, m, par, err = (Argon2idParams{TimeCost: 2, MemoryKiB: 64, Parallelism: 4}).resolve()
+	if err != nil || tc != 2 || m != 64 || par != 4 {
+		t.Fatalf("valid: %d %d %d, %v", tc, m, par, err)
+	}
+	if _, _, _, err = (Argon2idParams{Parallelism: 5}).resolve(); !errors.Is(err, ErrLimit) {
+		t.Fatalf("5 threads: %v", err)
+	}
+}
