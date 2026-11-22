@@ -102,9 +102,10 @@ func openDevice(rw blockRW, passphrase []byte, lim Limits) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	// newXTSCipher cannot fail here because unlockVEK always returns a 32- or
-	// 64-byte key after successful key unwrapping.
-	enc, _ := newXTSCipher(vek)
+	enc, err := newXTSCipher(vek)
+	if err != nil {
+		return nil, err
+	}
 	return &Device{f: rw, enc: enc}, nil
 }
 

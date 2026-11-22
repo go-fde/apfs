@@ -257,11 +257,23 @@ func unwrapVEK(vkEntries []keybagEntry, kek []byte) ([]byte, error) {
 	if len(vkEntries) == 0 {
 		return nil, fmt.Errorf("apfs: no volume key entry found in key bag")
 	}
+	badLen := 0
 	for _, vke := range vkEntries {
 		vek, err := aesKeyUnwrap(kek, vke.data)
-		if err == nil {
-			return vek, nil
+		if err != nil {
+			continue
 		}
+		// AES-XTS takes 32 or 64 bytes (newXTSCipher); the unwrapped key is
+		// attacker-chosen wherever the KEK is known, so refuse any other size
+		// here instead of building a nil cipher from it.
+		if len(vek) != 32 && len(vek) != 64 {
+			badLen = len(vek)
+			continue
+		}
+		return vek, nil
+	}
+	if badLen != 0 {
+		return nil, fmt.Errorf("apfs: unwrapped volume key is %d bytes, want 32 or 64", badLen)
 	}
 	return nil, fmt.Errorf("apfs: failed to unwrap volume key with derived KEK")
 }

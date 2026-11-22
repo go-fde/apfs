@@ -48,7 +48,10 @@ func formatDevice(rw blockRW, passphrase []byte) (*Device, error) {
 	if err := writeAPFSContainer(rw, passphrase, vek, kek, salt); err != nil {
 		return nil, err
 	}
-	enc, _ := newXTSCipher(vek)
+	enc, err := newXTSCipher(vek)
+	if err != nil {
+		return nil, err
+	}
 	return &Device{f: rw, enc: enc}, nil
 }
 
