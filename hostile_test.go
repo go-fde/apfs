@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/pbkdf2"
@@ -78,15 +79,23 @@ func TestUnwrapVEKRefusesAShortVEK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, err := unwrapVEK([]keybagEntry{{data: w}}, kek); err == nil {
+	v, err := unwrapVEK([]keybagEntry{{data: w}}, kek)
+	if err == nil {
 		t.Fatalf("unwrapVEK returned a %d-byte key", len(v))
+	}
+	if !strings.Contains(err.Error(), "16 bytes") {
+		t.Fatalf("the error does not name the size: %v", err)
+	}
+	// A KEK that cannot unwrap at all is a different error.
+	if _, err := unwrapVEK([]keybagEntry{{data: w}}, bytes.Repeat([]byte{0x99}, 32)); err == nil || strings.Contains(err.Error(), "bytes, want") {
+		t.Fatalf("a wrong KEK must not read as a size error: %v", err)
 	}
 	// A good entry after a short one is still found.
 	good, err := aesKeyWrap(kek, bytes.Repeat([]byte{0x33}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := unwrapVEK([]keybagEntry{{data: w}, {data: good}}, kek)
+	v, err = unwrapVEK([]keybagEntry{{data: w}, {data: good}}, kek)
 	if err != nil || len(v) != 32 {
 		t.Fatalf("unwrapVEK = %d bytes, %v", len(v), err)
 	}
