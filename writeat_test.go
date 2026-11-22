@@ -62,3 +62,24 @@ func TestWriteAtReadAtAlignedRoundTrip(t *testing.T) {
 		t.Fatal("device holds plaintext")
 	}
 }
+
+// processSectors failing must surface and stop the write: a cipher whose
+// sector size disagrees with cryptSectors' (a misuse, but a reachable one for
+// the error path) is refused with nothing written.
+func TestWriteAtReadAtSurfaceProcessSectorsError(t *testing.T) {
+	x, err := newXTSCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	x.sectorSize = 256
+	rw := newMemRW(4096)
+	if n, err := x.writeAt(rw, bytes.Repeat([]byte{1}, 256), 0); err == nil || n != 0 {
+		t.Fatalf("writeAt = %d, %v, want an error", n, err)
+	}
+	if !bytes.Equal(rw.buf, make([]byte, 4096)) {
+		t.Fatal("writeAt wrote despite the error")
+	}
+	if n, err := x.readAt(rw, make([]byte, 256), 0); err == nil || n != 0 {
+		t.Fatalf("readAt = %d, %v, want an error", n, err)
+	}
+}
