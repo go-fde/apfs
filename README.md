@@ -242,6 +242,16 @@ takes, and argon2 panics on 0. Every locker and KEKBLOB is therefore checked
   4 GiB, generous for keybags macOS calibrates on fast machines. A program
   opening images from elsewhere (an upload, a browser) can tighten them with
   `OpenLimited` / `OpenFromLimited`.
+- **The keybag as a whole**: the limits above bound ONE locker, but a keybag
+  holds up to about a thousand (4 KiB blocks) or sixteen thousand (64 KiB), and
+  an image needs no key material to ask for all of them. `MaxLockers` (zero
+  means 16), `MaxTotalPBKDF2Iterations` (zero means 4 x the per-locker
+  `MaxPBKDF2Iterations`) and `MaxTotalArgon2Work` (passes x KiB, zero means
+  4 x the per-locker product) bound the sum over the lockers, checked before
+  the first derivation in every keybag shape and in the keybag rewrite path
+  (`AddRecoveryKey` and friends). A keybag over a bound is `ErrLimit`, never
+  "wrong passphrase". A locker over the per-locker bound is refused without a
+  derivation and adds nothing to the total.
 
 If no locker opens and one was refused, the error wraps `ErrLimit`. If
 lockers were tried and none opened, it wraps `ErrWrongPassphrase`. Anything

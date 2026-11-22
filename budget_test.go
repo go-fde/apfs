@@ -157,3 +157,16 @@ func TestLimitsZeroTotalsMeanDefaults(t *testing.T) {
 		t.Fatal("satAdd")
 	}
 }
+
+// The keybag rewrite path (AddRecoveryKey and friends) walks the lockers too.
+func TestRewritePathRefusesTooManyLockers(t *testing.T) {
+	rw := lockerImage(t, 200, 1)
+	before := append([]byte(nil), rw.buf...)
+	err := AddRecoveryKey(rw, []byte("x"), []byte("recovery"))
+	if !errors.Is(err, ErrLimit) {
+		t.Fatalf("AddRecoveryKey on 200 lockers: err = %v, want ErrLimit", err)
+	}
+	if !bytes.Equal(before, rw.buf) {
+		t.Fatal("the image was modified")
+	}
+}
