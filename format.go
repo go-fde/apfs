@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/go-simd/adler32/fletcher64"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -146,28 +147,9 @@ func packKeybagBlock(entries []rawEntry) []byte {
 	const kbLockerHeaderStart = 32
 	binary.LittleEndian.PutUint32(buf[36:40], uint32(off-kbLockerHeaderStart))
 	// Seal: compute Fletcher-64 over buf[8:] and store at buf[0:8].
-	cksum := fletcher64(buf[8:])
+	cksum := fletcher64.Sum(buf[8:])
 	binary.LittleEndian.PutUint64(buf[0:8], cksum)
 	return buf
-}
-
-// fletcher64 implements the APFS Fletcher-64 variant. The algorithm
-// processes 4-byte little-endian words and computes a checksum that
-// makes the sum of all words (including a 64-bit appended cksum word)
-// equal zero modulo (2^32 - 1). Mirrors go-filesystems/apfs/format.go's
-// implementation; duplicated here to avoid a cross-package dependency
-// from this lower-level package.
-func fletcher64(buf []byte) uint64 {
-	const mod = (uint64(1) << 32) - 1
-	var s1, s2 uint64
-	for i := 0; i+4 <= len(buf); i += 4 {
-		w := uint64(binary.LittleEndian.Uint32(buf[i : i+4]))
-		s1 = (s1 + w) % mod
-		s2 = (s2 + s1) % mod
-	}
-	c1 := mod - ((s1 + s2) % mod)
-	c2 := mod - ((s1 + c1) % mod)
-	return (c2 << 32) | c1
 }
 
 // appendEntryUUID writes a keybag entry into buf at byte offset off and

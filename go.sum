@@ -2,6 +2,8 @@ github.com/go-encryptions/kdfbudget v0.1.0 h1:/1n/q+kjoBq3A5JCW/ORQ/nuTbFMn5H22D
 github.com/go-encryptions/kdfbudget v0.1.0/go.mod h1:8mdvU3fDl6oyWKcTBOSI6Ws+sxZBYOxSPc9i4bpDzS0=
 github.com/go-encryptions/xts v0.3.2 h1:0HKFiBsCaT2+4sPBZXy/oT6Wo8a96EpUEmrDzdGO8sw=
 github.com/go-encryptions/xts v0.3.2/go.mod h1:DOulimnYhyZsjPPeMPDkD/i6cUOLq7mpfvGKG+cdVKQ=
+github.com/go-simd/adler32 v0.3.0 h1:t9Fm1gADHeDNMLjwWqR/77VlOmyIQfc7ltO3WrFFhf4=
+github.com/go-simd/adler32 v0.3.0/go.mod h1:h27t3xEONs9mT8C4LJbGaR2srIk3i5gxNwnEXuEqpHI=
 golang.org/x/crypto v0.59.0 h1:xS2jhqYbzNrpvkWP2YTDf4TJwBy3ykR03i8vFDxEc7c=
 golang.org/x/crypto v0.59.0/go.mod h1:veDyUwATGs3c+vN3VfTbzViMGXeTBk3WyhBOkn+F/4U=
 golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=

@@ -103,7 +103,7 @@ The recipe (validated against Apple's reference 2026-05-09):
   functions without one (`DecryptContainerKeybag` and its siblings) are the
   4096-byte case.
 - **Keybag block layout**: 32-byte `obj_phys` (type = `0x6b657973`
-  "syek", sealed Fletcher-64 cksum) + 16-byte `apfs_kb_locker`
+  "syek", sealed Fletcher-64 cksum, computed by the shared `go-simd/adler32/fletcher64` kernel) + 16-byte `apfs_kb_locker`
   (version=2, nkeys, nbytes including the 16-byte header AND the
   trailing 16-byte alignment pad) + 16-byte-aligned entries.
 - **VEKBLOB / KEKBLOB**: ASN.1 DER with HMAC-SHA256 keyed by
